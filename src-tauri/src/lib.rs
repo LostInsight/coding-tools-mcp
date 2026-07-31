@@ -36,6 +36,12 @@ use commands::{
 };
 use tauri::Manager;
 
+#[cfg(desktop)]
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+};
+
 #[cfg(target_os = "windows")]
 fn acquire_single_instance() -> bool {
     use windows::core::w;
@@ -78,6 +84,27 @@ pub fn run() {
             // Recover FRP clients that stay alive while the public proxy dies
             // (common after install/restart network blips).
             tunnel::ensure_frp_health_loop();
+
+            #[cfg(desktop)]
+            {
+                let reload_item =
+                    MenuItem::with_id(app, "reload-ui", "重新加载界面", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&reload_item])?;
+                let mut tray = TrayIconBuilder::new()
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| {
+                        if event.id.as_ref() == "reload-ui" {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.eval("window.location.reload()");
+                            }
+                        }
+                    });
+                if let Some(icon) = app.default_window_icon().cloned() {
+                    tray = tray.icon(icon);
+                }
+                tray.build(app)?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
