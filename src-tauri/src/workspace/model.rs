@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::integrations::paseo::WorkspaceIntegrations;
 use crate::settings::AppSettings;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,6 +13,8 @@ pub struct WorkspaceProfile {
     pub runtime: RuntimeConfig,
     #[serde(default)]
     pub actions: ActionsConfig,
+    #[serde(default)]
+    pub integrations: WorkspaceIntegrations,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +299,7 @@ impl WorkspaceProfile {
             auth: AuthConfig::default(),
             runtime: RuntimeConfig::default(),
             actions: ActionsConfig::default(),
+            integrations: WorkspaceIntegrations::default(),
         }
     }
 
@@ -406,4 +410,38 @@ fn computed_public_url(
         }
     }
     public_url.trim_end_matches('/').to_string()
+}
+
+#[cfg(test)]
+mod paseo_config_tests {
+    use serde_json::json;
+
+    use super::WorkspaceProfile;
+
+    #[test]
+    fn legacy_workspace_without_integrations_defaults_paseo_to_disabled() {
+        let value = json!({
+            "id": "workspace",
+            "name": "Workspace",
+            "path": ".",
+            "tunnel": {},
+            "auth": {},
+            "runtime": {},
+            "actions": {}
+        });
+        let profile: WorkspaceProfile = serde_json::from_value(value).expect("legacy profile");
+        assert!(!profile.integrations.paseo.enabled);
+        assert_eq!(profile.integrations.paseo.access_mode.as_str(), "read_only");
+    }
+
+    #[test]
+    fn paseo_access_mode_roundtrips() {
+        let mut profile = WorkspaceProfile::new(".".into(), Some("Workspace".into()));
+        profile.integrations.paseo.enabled = true;
+        profile.integrations.paseo.access_mode =
+            crate::integrations::paseo::config::PaseoAccessMode::Assist;
+        let loaded: WorkspaceProfile =
+            serde_json::from_value(serde_json::to_value(profile).unwrap()).unwrap();
+        assert_eq!(loaded.integrations.paseo.access_mode.as_str(), "assist");
+    }
 }

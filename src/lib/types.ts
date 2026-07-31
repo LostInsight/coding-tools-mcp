@@ -59,6 +59,35 @@ export interface ActionsConfig {
   use_shared_secrets?: boolean;
 }
 
+export type PaseoAccessMode = "read_only" | "assist" | "control";
+
+export interface PaseoMonitorConfig {
+  enabled: boolean;
+  workspace_only: boolean;
+  agent_ids: string[];
+  workspaces: string[];
+  agent_name_patterns: string[];
+  agent_labels: string[];
+  exclude_name_patterns: string[];
+  stalled_after_minutes: number;
+  repeat_error_threshold: number;
+  activity_tail: number;
+}
+
+export interface PaseoIntegrationConfig {
+  enabled: boolean;
+  access_mode: PaseoAccessMode;
+  binary_path: string;
+  command_timeout_ms: number;
+  max_output_bytes: number;
+  host_configured: boolean;
+  monitor: PaseoMonitorConfig;
+}
+
+export interface WorkspaceIntegrations {
+  paseo: PaseoIntegrationConfig;
+}
+
 export interface WorkspaceProfile {
   id: string;
   name: string;
@@ -67,6 +96,33 @@ export interface WorkspaceProfile {
   auth: AuthConfig;
   runtime: RuntimeConfig;
   actions?: ActionsConfig;
+  integrations?: WorkspaceIntegrations;
+}
+
+export function paseoIntegrationConfig(profile?: WorkspaceProfile | null): PaseoIntegrationConfig {
+  const configured = profile?.integrations?.paseo;
+  return {
+    enabled: false,
+    access_mode: "read_only",
+    binary_path: "",
+    command_timeout_ms: 15_000,
+    max_output_bytes: 262_144,
+    host_configured: false,
+    ...configured,
+    monitor: {
+      enabled: true,
+      workspace_only: false,
+      agent_ids: [],
+      workspaces: [],
+      agent_name_patterns: [],
+      agent_labels: [],
+      exclude_name_patterns: ["paseo-supervisor"],
+      stalled_after_minutes: 45,
+      repeat_error_threshold: 2,
+      activity_tail: 30,
+      ...configured?.monitor,
+    },
+  };
 }
 
 export interface RuntimeStatus {

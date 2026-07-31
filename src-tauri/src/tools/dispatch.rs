@@ -52,6 +52,9 @@ fn policy_tool_err(err: PolicyError) -> Value {
 /// **唯一工具执行入口**。MCP `tools/call` 与 Actions `POST /actions/{tool}` 必须且只能调用此函数。
 /// 策略校验、分发、错误格式在此统一，两路传输层不得另做执行前校验（Actions 仅允许额外的暴露层 `validate_actions_exposure`）。
 pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
+    if crate::integrations::paseo::policy::is_paseo_tool(name) {
+        return crate::integrations::paseo::tools::call(&ctx.paseo, name, args);
+    }
     let effective_args = apply_default_cwd(ctx, name, args);
     if let Err(e) = validate_tool_arguments_for_workspace(
         name,
@@ -374,7 +377,10 @@ fn attach_standalone_metadata(output: &mut Value, recovery_hint: &str) {
 }
 
 fn filter_exposed_actions(ctx: &ToolContext, actions: Vec<String>) -> Vec<String> {
-    let exposed = crate::tools::registry::exposed_tool_names(&ctx.tool_profile);
+    let exposed = crate::tools::registry::exposed_tool_names_for_context(
+        &ctx.tool_profile,
+        &ctx.paseo.config,
+    );
     actions
         .into_iter()
         .filter(|action| exposed.contains(&action.as_str()))
@@ -382,7 +388,10 @@ fn filter_exposed_actions(ctx: &ToolContext, actions: Vec<String>) -> Vec<String
 }
 
 pub fn server_info(ctx: &ToolContext) -> Result<Value, WorkspaceError> {
-    let tools = crate::tools::registry::exposed_tool_names(&ctx.tool_profile);
+    let tools = crate::tools::registry::exposed_tool_names_for_context(
+        &ctx.tool_profile,
+        &ctx.paseo.config,
+    );
     Ok(tool_ok(json!({
         "server": "coding-tools-mcp",
         "title": "Coding Tools MCP",
@@ -397,7 +406,17 @@ pub fn server_info(ctx: &ToolContext) -> Result<Value, WorkspaceError> {
         "auth_type": ctx.auth.auth_type,
         "endpoint_path": "/mcp",
         "tools": tools,
-        "tool_count": tools.len()
+        "tool_count": tools.len(),
+        "integrations": {
+            "paseo": {
+                "enabled": ctx.paseo.config.enabled,
+                "access_mode": ctx.paseo.config.access_mode.as_str(),
+                "tool_count": tools.iter().filter(|name| name.starts_with("paseo_")).count(),
+                "health": "unknown",
+                "connection_type": ctx.paseo.connection_type(),
+                "host_configured": ctx.paseo.config.host_configured
+            }
+        }
     })))
 }
 
@@ -451,4 +470,55 @@ pub fn set_default_cwd(ctx: &ToolContext, args: &Value) -> Result<Value, Workspa
         "default_cwd": resolved.display,
         "resolved_cwd": resolved.path.display().to_string()
     })))
+}
+
+#[cfg(test)]
+mod paseo_tests {
+    use serde_json::json;
+
+    use crate::integrations::paseo::config::PaseoAccessMode;
+    use crate::tools::ToolContext;
+
+    use super::call_tool;
+
+    fn context() -> (tempfile::TempDir, tempfile::TempDir, ToolContext) {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let harness = tempfile::tempdir().expect("harness");
+        let context =
+            ToolContext::for_test(workspace.path().to_path_buf(), harness.path().to_path_buf())
+                .expect("context");
+        (workspace, harness, context)
+    }
+
+    #[test]
+    fn disabled_paseo_direct_call_never_reaches_a_command() {
+        let (_workspace, _harness, context) = context();
+        let result = call_tool(&context, "paseo_health", &json!({}));
+        assert_eq!(result["error"]["code"], "PASEO_DISABLED");
+    }
+
+    #[test]
+    fn read_only_policy_rejects_forged_send_call() {
+        let (_workspace, _harness, mut context) = context();
+        context.paseo.config.enabled = true;
+        let result = call_tool(
+            &context,
+            "paseo_send_agent_prompt",
+            &json!({"agent_id": "agent-1", "prompt": "continue"}),
+        );
+        assert_eq!(result["error"]["code"], "PASEO_ACCESS_DENIED");
+    }
+
+    #[test]
+    fn control_stop_requires_confirmation_before_binary_discovery() {
+        let (_workspace, _harness, mut context) = context();
+        context.paseo.config.enabled = true;
+        context.paseo.config.access_mode = PaseoAccessMode::Control;
+        let result = call_tool(
+            &context,
+            "paseo_stop_agent",
+            &json!({"agent_id": "agent-1", "confirm": false, "reason": "loop"}),
+        );
+        assert_eq!(result["error"]["code"], "PASEO_CONFIRMATION_REQUIRED");
+    }
 }

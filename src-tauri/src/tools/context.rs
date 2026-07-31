@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::harness::Harness;
+use crate::integrations::paseo::PaseoRuntimeContext;
 use crate::tools::policy::PolicySettings;
 use crate::tools::session::SessionStore;
 use crate::tools::workspace::{relative_display, Workspace};
@@ -14,6 +15,7 @@ pub struct ToolContext {
     pub tool_profile: String,
     pub permission_mode: String,
     pub harness: Harness,
+    pub paseo: PaseoRuntimeContext,
     default_cwd: Mutex<PathBuf>,
     pub sessions: Arc<SessionStore>,
 }
@@ -44,13 +46,35 @@ impl ToolContext {
         permission_mode: String,
     ) -> Self {
         let harness_root = Harness::default_root().expect("无法初始化 Harness 数据目录");
-        Self::from_workspace_with_harness_root(
+        let paseo = PaseoRuntimeContext::disabled(workspace.root().to_path_buf());
+        Self::from_workspace_with_harness_root_and_paseo(
             workspace,
             auth,
             policy,
             crate::tools::registry::normalize_tool_profile(&tool_profile).into(),
             permission_mode,
             harness_root,
+            paseo,
+        )
+    }
+
+    pub fn from_workspace_with_paseo(
+        workspace: Workspace,
+        auth: AuthConfig,
+        policy: PolicySettings,
+        tool_profile: String,
+        permission_mode: String,
+        paseo: PaseoRuntimeContext,
+    ) -> Self {
+        let harness_root = Harness::default_root().expect("无法初始化 Harness 数据目录");
+        Self::from_workspace_with_harness_root_and_paseo(
+            workspace,
+            auth,
+            policy,
+            tool_profile,
+            permission_mode,
+            harness_root,
+            paseo,
         )
     }
 
@@ -62,6 +86,27 @@ impl ToolContext {
         permission_mode: String,
         harness_root: PathBuf,
     ) -> Self {
+        let paseo = PaseoRuntimeContext::disabled(workspace.root().to_path_buf());
+        Self::from_workspace_with_harness_root_and_paseo(
+            workspace,
+            auth,
+            policy,
+            tool_profile,
+            permission_mode,
+            harness_root,
+            paseo,
+        )
+    }
+
+    fn from_workspace_with_harness_root_and_paseo(
+        workspace: Workspace,
+        auth: AuthConfig,
+        policy: PolicySettings,
+        tool_profile: String,
+        permission_mode: String,
+        harness_root: PathBuf,
+        paseo: PaseoRuntimeContext,
+    ) -> Self {
         let root = workspace.root().to_path_buf();
         Self {
             workspace,
@@ -70,6 +115,7 @@ impl ToolContext {
             tool_profile: crate::tools::registry::normalize_tool_profile(&tool_profile).into(),
             permission_mode,
             harness: Harness::new(root.clone(), harness_root).expect("无法初始化 Harness"),
+            paseo,
             default_cwd: Mutex::new(root),
             sessions: Arc::new(SessionStore::new()),
         }

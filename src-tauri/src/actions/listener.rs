@@ -18,7 +18,7 @@ use crate::auth::{
     authorization_server_metadata, authorize_get, authorize_post, external_base_url,
     token_exchange, AuthorizeForm, AuthorizeParams, OAuthRuntime, TokenForm,
 };
-use crate::tools::{self, is_allowed_tool, policy::PolicySettings, wrap_tool_result, ToolContext};
+use crate::tools::{self, policy::PolicySettings, wrap_tool_result, ToolContext};
 use crate::tunnel::append_profile_log;
 
 use super::auth::{require_actions_auth, AuthConfig};
@@ -52,6 +52,7 @@ pub fn spawn_listener(
     oauth_password: Option<String>,
     oauth_token_secret: Option<String>,
     policy: PolicySettings,
+    paseo: crate::integrations::paseo::PaseoRuntimeContext,
 ) -> Result<(ShutdownSender, tauri::async_runtime::JoinHandle<()>), String> {
     if auth_type == "api_key" && api_key.as_ref().is_none_or(String::is_empty) {
         return Err("Actions API key is not configured".into());
@@ -99,6 +100,7 @@ pub fn spawn_listener(
             oauth,
             oauth_client_secret,
             policy,
+            paseo,
             shutdown_rx,
         )
         .await;
@@ -132,10 +134,11 @@ async fn serve(
     oauth: Option<Arc<OAuthRuntime>>,
     oauth_client_secret: Option<String>,
     policy: PolicySettings,
+    paseo: crate::integrations::paseo::PaseoRuntimeContext,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let workspace = tools::Workspace::new(workspace_path.clone()).map_err(|e| e.message())?;
-    let ctx = Arc::new(ToolContext::from_workspace(
+    let ctx = Arc::new(ToolContext::from_workspace_with_paseo(
         workspace,
         crate::workspace::AuthConfig {
             auth_type: auth_type.clone(),
@@ -144,13 +147,14 @@ async fn serve(
         policy.clone(),
         "full".into(),
         policy.permission_mode.clone(),
+        paseo,
     ));
-    let tools: Vec<Value> = tools::list_tools()
+    let tools: Vec<Value> = tools::list_tools_for_context(&ctx.tool_profile, &ctx.paseo.config)
         .into_iter()
         .filter(|tool| {
             tool.get("name")
                 .and_then(Value::as_str)
-                .map(is_allowed_tool)
+                .map(|name| tools::is_allowed_tool_for_context(name, &ctx.paseo.config))
                 .unwrap_or(false)
         })
         .collect();
@@ -159,7 +163,12 @@ async fn serve(
     } else {
         configured_public_url.clone()
     };
-    let openapi_doc = openapi::build_openapi(&tools, &public_base_url, &auth_type);
+    let openapi_doc = openapi::build_openapi(
+        &tools,
+        &public_base_url,
+        &auth_type,
+        Some(&ctx.paseo.config),
+    );
 
     let auth = Arc::new(AuthConfig::new(
         auth_type,
@@ -358,7 +367,9 @@ async fn execute_action(
         None => json!({}),
     };
 
-    if let Err(err) = tools::policy::validate_actions_exposure(&tool_name) {
+    if let Err(err) =
+        tools::policy::validate_actions_exposure_for_context(&tool_name, &state.ctx.paseo.config)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "detail": err.to_string() })),
@@ -366,12 +377,13 @@ async fn execute_action(
             .into_response();
     }
 
-    let structured = if tools::registry::MUTATING_TOOLS.contains(&tool_name.as_str()) {
-        let _guard = state.write_lock.lock().await;
-        tools::call_tool(state.ctx.as_ref(), &tool_name, &arguments)
-    } else {
-        tools::call_tool(state.ctx.as_ref(), &tool_name, &arguments)
-    };
+    let structured =
+        if tools::registry::is_mutating_tool_for_context(&tool_name, &state.ctx.paseo.config) {
+            let _guard = state.write_lock.lock().await;
+            tools::call_tool(state.ctx.as_ref(), &tool_name, &arguments)
+        } else {
+            tools::call_tool(state.ctx.as_ref(), &tool_name, &arguments)
+        };
     let result = wrap_tool_result(structured);
     let is_error = result
         .get("isError")

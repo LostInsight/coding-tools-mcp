@@ -1,5 +1,10 @@
 use serde_json::{json, Value};
 
+use crate::integrations::paseo::{
+    schema as paseo_schema, PaseoIntegrationConfig, PASEO_ASSIST_TOOLS, PASEO_CONTROL_TOOLS,
+    PASEO_READ_ONLY_TOOLS,
+};
+
 pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
     (
         "harness_status",
@@ -494,6 +499,53 @@ pub fn list_tools_for_profile(tool_profile: &str) -> Vec<Value> {
         .collect()
 }
 
+pub fn exposed_tool_names_for_context(
+    tool_profile: &str,
+    paseo: &PaseoIntegrationConfig,
+) -> Vec<&'static str> {
+    let mut names = exposed_tool_names(tool_profile);
+    if !paseo.enabled {
+        return names;
+    }
+    names.extend_from_slice(PASEO_READ_ONLY_TOOLS);
+    if paseo.access_mode.allows_assist() {
+        names.extend_from_slice(PASEO_ASSIST_TOOLS);
+    }
+    if paseo.access_mode.allows_control() {
+        names.extend_from_slice(PASEO_CONTROL_TOOLS);
+    }
+    names
+}
+
+pub fn list_tools_for_context(tool_profile: &str, paseo: &PaseoIntegrationConfig) -> Vec<Value> {
+    let mut tools = list_tools_for_profile(tool_profile);
+    if !paseo.enabled {
+        return tools;
+    }
+    for name in exposed_tool_names_for_context(tool_profile, paseo)
+        .into_iter()
+        .filter(|name| name.starts_with("paseo_"))
+    {
+        if let Some(definition) = paseo_schema::definition(name) {
+            tools.push(definition);
+        }
+    }
+    tools
+}
+
+pub fn is_allowed_tool_for_context(name: &str, paseo: &PaseoIntegrationConfig) -> bool {
+    is_allowed_tool(name)
+        || exposed_tool_names_for_context("advanced", paseo)
+            .into_iter()
+            .any(|candidate| candidate == name)
+}
+
+pub fn is_mutating_tool_for_context(name: &str, paseo: &PaseoIntegrationConfig) -> bool {
+    MUTATING_TOOLS.contains(&name)
+        || (paseo.enabled
+            && (PASEO_ASSIST_TOOLS.contains(&name) || PASEO_CONTROL_TOOLS.contains(&name)))
+}
+
 pub fn input_schema(name: &str) -> Value {
     match name {
         "history_session_bootstrap" => json!({
@@ -872,7 +924,9 @@ pub fn input_schema(name: &str) -> Value {
 mod tests {
     use std::collections::HashSet;
 
-    use super::{input_schema, list_tools_for_profile};
+    use crate::integrations::paseo::config::{PaseoAccessMode, PaseoIntegrationConfig};
+
+    use super::{input_schema, list_tools_for_context, list_tools_for_profile, CORE_TOOLS};
 
     #[test]
     fn core_catalog_exposes_24_chatgpt_compatible_tools() {
@@ -899,5 +953,62 @@ mod tests {
             assert!(schema.get("anyOf").is_none(), "{name} anyOf");
             assert!(schema.get("$ref").is_none(), "{name} ref");
         }
+    }
+
+    #[test]
+    fn paseo_catalog_is_orthogonal_to_existing_profiles() {
+        let baseline = list_tools_for_profile("core");
+        let disabled = list_tools_for_context("core", &PaseoIntegrationConfig::default());
+        assert_eq!(disabled, baseline);
+        assert!(CORE_TOOLS.iter().all(|name| !name.starts_with("paseo_")));
+
+        let mut config = PaseoIntegrationConfig {
+            enabled: true,
+            ..PaseoIntegrationConfig::default()
+        };
+        let read_only = tool_names(list_tools_for_context("core", &config));
+        assert_eq!(
+            read_only
+                .iter()
+                .filter(|name| name.starts_with("paseo_"))
+                .count(),
+            6
+        );
+        assert!(!has_tool(&read_only, "paseo_send_agent_prompt"));
+        assert!(!has_tool(&read_only, "paseo_stop_agent"));
+
+        config.access_mode = PaseoAccessMode::Assist;
+        let assist = tool_names(list_tools_for_context("core", &config));
+        assert_eq!(
+            assist
+                .iter()
+                .filter(|name| name.starts_with("paseo_"))
+                .count(),
+            7
+        );
+        assert!(has_tool(&assist, "paseo_send_agent_prompt"));
+        assert!(!has_tool(&assist, "paseo_stop_agent"));
+
+        config.access_mode = PaseoAccessMode::Control;
+        let control = tool_names(list_tools_for_context("core", &config));
+        assert_eq!(
+            control
+                .iter()
+                .filter(|name| name.starts_with("paseo_"))
+                .count(),
+            8
+        );
+        assert!(has_tool(&control, "paseo_stop_agent"));
+    }
+
+    fn tool_names(tools: Vec<serde_json::Value>) -> Vec<String> {
+        tools
+            .into_iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    fn has_tool(tools: &[String], name: &str) -> bool {
+        tools.iter().any(|tool| tool == name)
     }
 }

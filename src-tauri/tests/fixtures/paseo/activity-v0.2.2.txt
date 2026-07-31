@@ -1,0 +1,5 @@
+[tool]
+cargo test returned error at C:\work\secret-value\src\main.rs line 42
+---
+[assistant]
+Waiting for user input before continuing. Bearer secret-value

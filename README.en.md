@@ -255,6 +255,14 @@ The project uses a Workspace-first permission model:
 
 > Windows child-process execution currently uses a `policy_only` boundary. The honest runtime value is `sandbox_enforced: false`; static command policy is not a complete OS filesystem sandbox.
 
+## Optional Paseo control and monitoring
+
+Each workspace can independently enable **Paseo Integration**, allowing MCP and Actions clients to check an existing Paseo daemon, discover agents, inspect bounded activity and pending permissions, run deterministic stall diagnosis, and use one low-overhead snapshot for hourly ChatGPT monitoring. It is disabled by default and does not alter the existing core catalog while disabled.
+
+Read only is monitoring-only; Assist additionally allows bounded text prompts; Control also allows `paseo_stop_agent` with explicit confirmation and a reason. The integration does not expose permission approval/denial, arbitrary Paseo commands, archive/delete/kill operations, or daemon configuration.
+
+See the [Paseo Integration guide](docs/paseo-integration.md) for installation, remote host and pairing security, tool reference, and the hourly ChatGPT task example.
+
 ## Local development
 
 Requirements: Node.js 20+, Rust stable, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform.

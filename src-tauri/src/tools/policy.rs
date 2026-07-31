@@ -196,6 +196,17 @@ pub fn validate_actions_exposure(tool_name: &str) -> Result<(), PolicyError> {
     }
 }
 
+pub fn validate_actions_exposure_for_context(
+    tool_name: &str,
+    paseo: &crate::integrations::paseo::PaseoIntegrationConfig,
+) -> Result<(), PolicyError> {
+    if super::registry::is_allowed_tool_for_context(tool_name, paseo) {
+        Ok(())
+    } else {
+        Err(PolicyError(format!("Tool is not exposed: {tool_name}")))
+    }
+}
+
 pub fn validate_command(arguments: &Value, policy: &PolicySettings) -> Result<(), PolicyError> {
     validate_command_for_workspace(arguments, policy, None)
 }

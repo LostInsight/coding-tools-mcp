@@ -16,6 +16,8 @@ pub use context::{SharedToolContext, ToolContext};
 pub use dispatch::call_tool;
 pub use policy::{validate_actions_exposure, PolicySettings};
 pub use registry::{
-    exposed_tool_names, is_allowed_tool, list_tools, list_tools_for_profile, MUTATING_TOOLS,
+    exposed_tool_names, exposed_tool_names_for_context, is_allowed_tool,
+    is_allowed_tool_for_context, is_mutating_tool_for_context, list_tools, list_tools_for_context,
+    list_tools_for_profile, MUTATING_TOOLS,
 };
 pub use workspace::{wrap_mcp_tool_result, wrap_tool_result, Workspace};

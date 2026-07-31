@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::tools::{
-    call_tool, list_tools_for_profile, wrap_mcp_tool_result, SharedToolContext, ToolContext,
+    call_tool, list_tools_for_context, wrap_mcp_tool_result, SharedToolContext, ToolContext,
     Workspace,
 };
 use crate::workspace::AuthConfig;
@@ -23,7 +23,7 @@ pub fn handle_request(state: &SharedState, body: &Value) -> Value {
         "initialize" => Ok(initialize_result()),
         "ping" => Ok(serde_json::json!({})),
         "tools/list" => {
-            let tools = list_tools_for_profile(&state.tool_profile);
+            let tools = list_tools_for_context(&state.tool_profile, &state.paseo.config);
             Ok(serde_json::json!({ "tools": tools }))
         }
         "tools/call" => handle_tools_call(state, &params),
@@ -63,7 +63,10 @@ fn handle_tools_call(state: &SharedState, params: &Value) -> Result<Value, Value
     let args = tool_arguments(name, params);
 
     let canonical_name = crate::tools::registry::canonical_tool_name(name);
-    let known = crate::tools::registry::exposed_tool_names(&state.tool_profile);
+    let known = crate::tools::registry::exposed_tool_names_for_context(
+        &state.tool_profile,
+        &state.paseo.config,
+    );
     if !known.iter().any(|n| n == &canonical_name) {
         return Err(serde_json::json!({
             "code": -32602,
@@ -98,6 +101,7 @@ fn tool_arguments(name: &str, params: &Value) -> Value {
     args
 }
 
+#[allow(dead_code)]
 pub fn new_state(
     workspace: Workspace,
     auth: AuthConfig,
@@ -111,6 +115,24 @@ pub fn new_state(
         policy,
         tool_profile,
         permission_mode,
+    ))
+}
+
+pub fn new_state_with_paseo(
+    workspace: Workspace,
+    auth: AuthConfig,
+    policy: crate::tools::policy::PolicySettings,
+    tool_profile: String,
+    permission_mode: String,
+    paseo: crate::integrations::paseo::PaseoRuntimeContext,
+) -> SharedState {
+    Arc::new(ToolContext::from_workspace_with_paseo(
+        workspace,
+        auth,
+        policy,
+        tool_profile,
+        permission_mode,
+        paseo,
     ))
 }
 
@@ -236,5 +258,38 @@ mod tests {
 
         assert!(response.get("error").is_none());
         assert_eq!(response["result"]["structuredContent"]["ok"], true);
+    }
+
+    #[test]
+    fn disabled_paseo_is_not_exposed_or_dispatched_by_mcp() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let harness = tempfile::tempdir().expect("harness tempdir");
+        let state = Arc::new(
+            ToolContext::for_test(workspace.path().to_path_buf(), harness.path().to_path_buf())
+                .expect("tool context"),
+        );
+        let listed = handle_request(
+            &state,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+        );
+        assert!(listed["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .all(|tool| !tool["name"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("paseo_")));
+
+        let called = handle_request(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "paseo_health", "arguments": {}}
+            }),
+        );
+        assert_eq!(called["error"]["data"]["reason"], "unknown_tool");
     }
 }

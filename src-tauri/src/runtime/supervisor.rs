@@ -6,6 +6,7 @@ use tauri::async_runtime::JoinHandle;
 
 use crate::actions;
 use crate::error::AppResult;
+use crate::integrations::paseo::PaseoRuntimeContext;
 use crate::mcp;
 use crate::platform::platform;
 use crate::runtime::port::{
@@ -247,6 +248,19 @@ impl RuntimeSupervisor {
             }
         }
 
+        let paseo_host =
+            if profile.integrations.paseo.enabled && profile.integrations.paseo.host_configured {
+                SecretStore::get(&profile.id, "paseo_host")?
+            } else {
+                None
+            };
+        let paseo = PaseoRuntimeContext::new(
+            profile.id.clone(),
+            PathBuf::from(&profile.path),
+            profile.integrations.paseo.clone(),
+            paseo_host,
+        );
+
         let spawn_result = match kind {
             ServiceKind::Mcp => {
                 let use_shared = profile.auth.use_shared_secrets;
@@ -279,6 +293,7 @@ impl RuntimeSupervisor {
                     oauth_password,
                     oauth_token_secret,
                     profile.runtime.clone(),
+                    paseo.clone(),
                 )
             }
             ServiceKind::Actions => {
@@ -336,6 +351,7 @@ impl RuntimeSupervisor {
                     oauth_password,
                     oauth_token_secret,
                     policy,
+                    paseo,
                 )
             }
         };

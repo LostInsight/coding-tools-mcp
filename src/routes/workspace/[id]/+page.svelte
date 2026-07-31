@@ -8,6 +8,7 @@
   import AuthConfigForm from "$lib/components/AuthConfigForm.svelte";
   import HealthPanel from "$lib/components/HealthPanel.svelte";
   import LogViewer from "$lib/components/LogViewer.svelte";
+  import PaseoIntegrationForm from "$lib/components/PaseoIntegrationForm.svelte";
   import RuntimePolicyForm, {
     type RuntimePolicyDraft,
   } from "$lib/components/RuntimePolicyForm.svelte";
@@ -35,6 +36,12 @@
     updateWorkspace,
   } from "$lib/api/workspaces";
   import { listFrpProfiles, setLastWorkspace, type FrpProfileDto } from "$lib/api/settings";
+  import {
+    getPaseoIntegrationSettings,
+    savePaseoIntegrationSettings,
+    type PaseoIntegrationSettings,
+    type PaseoIntegrationSettingsInput,
+  } from "$lib/api/paseo";
   import { confirm } from "@tauri-apps/plugin-dialog";
   import { restartTunnel, stopTunnel } from "$lib/api/tunnel";
   import { runServiceToggle, notifyStartFailure } from "$lib/runtime/service";
@@ -71,6 +78,7 @@
   let actionsLocal = $state("");
   let actionsPublic = $state("");
   let frpProfiles = $state<FrpProfileDto[]>([]);
+  let paseoSettings = $state<PaseoIntegrationSettings | null>(null);
 
   let activeService = $state<ServiceTab>("mcp");
   let mcpSubTab = $state<SubTab>("config");
@@ -171,13 +179,15 @@
       return;
     }
 
-    const [mcpRuntime, actionsRuntime] = await Promise.all([
+    const [mcpRuntime, actionsRuntime, nextPaseoSettings] = await Promise.all([
       getRuntimeStatus(id),
       getActionsRuntimeStatus(id),
+      getPaseoIntegrationSettings(id),
     ]);
     if (generation !== loadGeneration || id !== workspaceId) return;
     applyMcpRuntime(mcpRuntime, id);
     applyActionsRuntime(actionsRuntime, id);
+    paseoSettings = nextPaseoSettings;
   }
 
   async function refreshProfile(id = workspaceId): Promise<WorkspaceProfile | null> {
@@ -443,6 +453,40 @@
     await promptServiceRestart(actionsStatus === "running", "Actions 服务");
   }
 
+  async function savePaseoIntegration(
+    input: PaseoIntegrationSettingsInput,
+  ): Promise<PaseoIntegrationSettings> {
+    if (!workspaceId) throw new Error("workspace unavailable");
+    const targetWorkspaceId = workspaceId;
+    const saved = await savePaseoIntegrationSettings(targetWorkspaceId, input);
+    paseoSettings = saved;
+    await refreshProfile(targetWorkspaceId);
+    if (targetWorkspaceId !== workspaceId) return saved;
+
+    let restartFailed = false;
+    if (mcpStatus === "running") {
+      try {
+        applyMcpRuntime(await restartRuntime(targetWorkspaceId), targetWorkspaceId);
+      } catch {
+        restartFailed = true;
+      }
+    }
+    if (actionsStatus === "running") {
+      try {
+        applyActionsRuntime(await restartActionsRuntime(targetWorkspaceId), targetWorkspaceId);
+      } catch {
+        restartFailed = true;
+      }
+    }
+    showToast(
+      restartFailed
+        ? "配置已保存，但当前工作区服务重启失败；请手动重启后再连接。"
+        : "工具清单已更新；MCP 客户端可能需要重新连接。",
+      { kind: restartFailed ? "warning" : "info", duration: 8000 },
+    );
+    return saved;
+  }
+
   async function saveMcpAuth(auth: AuthConfig, options?: { skipRuntimeRestart?: boolean }) {
     if (!profile || !workspaceId) return;
     const next: WorkspaceProfile = { ...profile, auth };
@@ -529,6 +573,7 @@
     const id = workspaceId;
     if (!id) return;
     profile = null;
+    paseoSettings = null;
     void load(id);
 
     return () => {
@@ -661,6 +706,16 @@
                 deniedDrives={profile.runtime.filesystem?.denied_drives?.join(",") ?? ""}
                 onSave={saveMcpPolicy}
               />
+            </div>
+            <div class="border-t border-[var(--color-border)] pt-5">
+              <p class="tx-section-label">Paseo Integration</p>
+              {#if paseoSettings}
+                <PaseoIntegrationForm
+                  workspaceId={workspaceId!}
+                  settings={paseoSettings}
+                  onSave={savePaseoIntegration}
+                />
+              {/if}
             </div>
           </div>
         {:else if mcpSubTab === "logs"}

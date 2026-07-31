@@ -2,6 +2,7 @@ mod app_info;
 mod frp_profiles;
 mod health;
 mod logs;
+mod paseo;
 pub(crate) mod runtime;
 mod secrets;
 mod software;
@@ -17,6 +18,10 @@ pub use frp_profiles::{
 };
 pub use health::run_health_checks;
 pub use logs::read_workspace_logs;
+pub use paseo::{
+    clear_paseo_monitor_snapshots, get_paseo_integration_settings, list_paseo_filter_options,
+    save_paseo_integration_settings, test_paseo_connection,
+};
 pub use runtime::{
     get_actions_runtime_status, get_runtime_status, restart_actions_runtime, restart_runtime,
     start_actions_runtime, start_runtime, stop_actions_runtime, stop_runtime,

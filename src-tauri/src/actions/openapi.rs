@@ -1,8 +1,16 @@
 use serde_json::{json, Map, Value};
 
-use crate::tools::{is_allowed_tool, MUTATING_TOOLS};
+use crate::integrations::paseo::PaseoIntegrationConfig;
+use crate::tools::{
+    is_allowed_tool, is_allowed_tool_for_context, is_mutating_tool_for_context, MUTATING_TOOLS,
+};
 
-pub fn build_openapi(tools: &[Value], public_base_url: &str, auth_type: &str) -> Value {
+pub fn build_openapi(
+    tools: &[Value],
+    public_base_url: &str,
+    auth_type: &str,
+    paseo: Option<&PaseoIntegrationConfig>,
+) -> Value {
     let mut paths = Map::new();
     let use_api_key = auth_type == "api_key";
 
@@ -10,7 +18,10 @@ pub fn build_openapi(tools: &[Value], public_base_url: &str, auth_type: &str) ->
         let Some(name) = tool.get("name").and_then(Value::as_str) else {
             continue;
         };
-        if !is_allowed_tool(name) {
+        if !paseo.map_or_else(
+            || is_allowed_tool(name),
+            |config| is_allowed_tool_for_context(name, config),
+        ) {
             continue;
         }
 
@@ -58,7 +69,10 @@ pub fn build_openapi(tools: &[Value], public_base_url: &str, auth_type: &str) ->
                 "422": { "description": "Tool execution failed" },
                 "502": { "description": "MCP backend failure" }
             },
-            "x-openai-isConsequential": MUTATING_TOOLS.contains(&name)
+            "x-openai-isConsequential": paseo.map_or_else(
+                || MUTATING_TOOLS.contains(&name),
+                |config| is_mutating_tool_for_context(name, config)
+            )
         });
 
         if use_api_key {
@@ -195,7 +209,7 @@ mod tests {
             "description": "Read a file",
             "inputSchema": { "type": "object" }
         })];
-        let schema = build_openapi(&tools, "https://actions.example.com", "none");
+        let schema = build_openapi(&tools, "https://actions.example.com", "none", None);
         assert!(schema["paths"]["/actions/read_file"]["post"]["security"].is_null());
         assert!(schema["components"]["securitySchemes"].is_null());
     }
@@ -207,7 +221,7 @@ mod tests {
             "description": "Read a file",
             "inputSchema": { "type": "object" }
         })];
-        let schema = build_openapi(&tools, "https://actions.example.com", "api_key");
+        let schema = build_openapi(&tools, "https://actions.example.com", "api_key", None);
         assert_eq!(
             schema["components"]["securitySchemes"]["bearerAuth"]["scheme"],
             "bearer"
@@ -221,7 +235,7 @@ mod tests {
     #[test]
     fn core_openapi_exposes_grep_text_as_read_only() {
         let tools = crate::tools::list_tools_for_profile("core");
-        let schema = build_openapi(&tools, "https://actions.example.com", "none");
+        let schema = build_openapi(&tools, "https://actions.example.com", "none", None);
         let operation = &schema["paths"]["/actions/grep_text"]["post"];
 
         assert_eq!(operation["operationId"], "coding_grep_text");
@@ -229,6 +243,31 @@ mod tests {
         assert_eq!(
             operation["requestBody"]["content"]["application/json"]["schema"],
             crate::tools::registry::input_schema("grep_text")
+        );
+    }
+
+    #[test]
+    fn paseo_openapi_tracks_context_and_consequential_tools() {
+        let mut config = PaseoIntegrationConfig {
+            enabled: true,
+            access_mode: crate::integrations::paseo::config::PaseoAccessMode::Assist,
+            ..PaseoIntegrationConfig::default()
+        };
+        let tools = crate::tools::list_tools_for_context("advanced", &config);
+        let schema = build_openapi(&tools, "https://actions.example.com", "none", Some(&config));
+        assert!(schema["paths"]["/actions/paseo_health"].is_object());
+        assert_eq!(
+            schema["paths"]["/actions/paseo_send_agent_prompt"]["post"]["x-openai-isConsequential"],
+            true
+        );
+        assert!(schema["paths"]["/actions/paseo_stop_agent"].is_null());
+
+        config.access_mode = crate::integrations::paseo::config::PaseoAccessMode::Control;
+        let tools = crate::tools::list_tools_for_context("advanced", &config);
+        let schema = build_openapi(&tools, "https://actions.example.com", "none", Some(&config));
+        assert_eq!(
+            schema["paths"]["/actions/paseo_stop_agent"]["post"]["x-openai-isConsequential"],
+            true
         );
     }
 }

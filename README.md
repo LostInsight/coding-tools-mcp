@@ -263,6 +263,14 @@ MCP 和 Actions 可以为同一个工作区同时运行，也可以分别使用�
 
 > Windows 子进程目前仍是 `policy_only` 执行边界，返回中的 `sandbox_enforced: false` 是真实状态。静态命令策略不能等同于完整的操作系统文件系统沙箱。
 
+## 可选 Paseo 控制与监控
+
+每个工作区可以单独启用 **Paseo Integration**，让 MCP/Actions 客户端检查现有 Paseo daemon、发现代理、查询活动与待处理权限、执行确定性停滞诊断，并通过一个低开销快照支持 ChatGPT 每小时监控。默认关闭，不会改变现有 core 工具清单。
+
+Read only 只监控；Assist 额外允许发送文本提示；Control 再允许带显式确认和理由的 `paseo_stop_agent`。集成不提供权限批准/拒绝、任意 Paseo 命令、archive/delete/kill 或 daemon 配置修改。
+
+安装、远程 host/pairing 安全、工具说明和 ChatGPT 定时任务示例见 [Paseo Integration 指南](docs/paseo-integration.md)。
+
 ## 本地开发
 
 环境要求：Node.js 20+、Rust stable，以及当前系统的 [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/)。
