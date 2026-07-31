@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { listFrpProfiles, type FrpProfileDto } from "$lib/api/settings";
   import { testTunnel as invokeTunnelTest } from "$lib/api/tunnel";
+  import NamedTunnelControls from "$lib/components/NamedTunnelControls.svelte";
   import SecretTokenField from "$lib/components/SecretTokenField.svelte";
   import { showToast } from "$lib/stores/toast";
 
@@ -13,6 +14,10 @@
     frp_profile_id: string;
     frp_server_port: number;
     cloudflare_mode: string;
+    cloudflare_account_id: string;
+    cloudflare_tunnel_id: string;
+    cloudflare_zone_id: string;
+    cloudflare_overwrite_dns: boolean;
     use_proxy: boolean;
   }
 
@@ -38,16 +43,22 @@
     frp_profile_id: "",
     frp_server_port: 7000,
     cloudflare_mode: "quick",
+    cloudflare_account_id: "",
+    cloudflare_tunnel_id: "",
+    cloudflare_zone_id: "",
+    cloudflare_overwrite_dns: false,
     use_proxy: true,
   });
   let saving = $state(false);
   let testing = $state(false);
-  let tokenField = $state<SecretTokenField | null>(null);
-  let tokenPending = $state(false);
+  let tunnelTokenField = $state<SecretTokenField | null>(null);
+  let apiTokenField = $state<SecretTokenField | null>(null);
+  let tunnelTokenPending = $state(false);
+  let apiTokenPending = $state(false);
   let frpProfiles = $state<FrpProfileDto[]>([]);
   let legacyFrpOpen = $state(false);
 
-  const secretKey = $derived(
+  const tunnelSecretKey = $derived(
     service === "mcp"
       ? draft.type === "frp"
         ? ("frp_token" as const)
@@ -55,6 +66,12 @@
       : draft.type === "frp"
         ? ("actions_frp_token" as const)
         : ("actions_cloudflare_token" as const),
+  );
+
+  const apiSecretKey = $derived(
+    service === "mcp"
+      ? ("cloudflare_api_token" as const)
+      : ("actions_cloudflare_api_token" as const),
   );
 
   const selectedProfile = $derived(
@@ -71,8 +88,13 @@
       draft.frp_profile_id !== config.frp_profile_id ||
       draft.frp_server_port !== config.frp_server_port ||
       draft.cloudflare_mode !== config.cloudflare_mode ||
+      draft.cloudflare_account_id !== config.cloudflare_account_id ||
+      draft.cloudflare_tunnel_id !== config.cloudflare_tunnel_id ||
+      draft.cloudflare_zone_id !== config.cloudflare_zone_id ||
+      draft.cloudflare_overwrite_dns !== config.cloudflare_overwrite_dns ||
       draft.use_proxy !== config.use_proxy ||
-      tokenPending,
+      tunnelTokenPending ||
+      apiTokenPending,
   );
 
   const showFrp = $derived(draft.type === "frp");
@@ -85,6 +107,10 @@
     draft = {
       ...config,
       frp_profile_id: config.frp_profile_id ?? "",
+      cloudflare_account_id: config.cloudflare_account_id ?? "",
+      cloudflare_tunnel_id: config.cloudflare_tunnel_id ?? "",
+      cloudflare_zone_id: config.cloudflare_zone_id ?? "",
+      cloudflare_overwrite_dns: config.cloudflare_overwrite_dns ?? false,
       use_proxy: config.use_proxy ?? true,
     };
   });
@@ -94,8 +120,11 @@
   });
 
   async function saveDraft(options?: SaveTunnelOptions) {
-    if (tokenField && (showLegacyFrpToken || showCloudflareToken)) {
-      await tokenField.saveIfDirty();
+    if (tunnelTokenField && (showLegacyFrpToken || showCloudflareToken)) {
+      await tunnelTokenField.saveIfDirty();
+    }
+    if (apiTokenField && showCloudflareToken) {
+      await apiTokenField.saveIfDirty();
     }
     const payload: TunnelFormConfig = {
       ...draft,
@@ -272,10 +301,10 @@
 
       {#if showLegacyFrpToken}
         <SecretTokenField
-          bind:this={tokenField}
-          bind:hasPending={tokenPending}
+          bind:this={tunnelTokenField}
+          bind:hasPending={tunnelTokenPending}
           {workspaceId}
-          secretKey={secretKey}
+          secretKey={tunnelSecretKey}
           label="FRP Token（可选）"
         />
       {/if}
@@ -296,17 +325,60 @@
 
     {#if showCloudflareToken}
       <SecretTokenField
-        bind:this={tokenField}
-        bind:hasPending={tokenPending}
+        bind:this={tunnelTokenField}
+        bind:hasPending={tunnelTokenPending}
         {workspaceId}
-        secretKey={secretKey}
+        secretKey={tunnelSecretKey}
+        label="Cloudflare Tunnel Token"
       />
+      <SecretTokenField
+        bind:this={apiTokenField}
+        bind:hasPending={apiTokenPending}
+        {workspaceId}
+        secretKey={apiSecretKey}
+        label="Cloudflare API Token"
+      />
+
+      <div class="grid gap-3 sm:grid-cols-2">
+        <label class="grid gap-1">
+          <span class="text-xs text-[var(--color-text-muted)]">Cloudflare Account ID</span>
+          <input
+            type="text"
+            class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
+            bind:value={draft.cloudflare_account_id}
+          />
+        </label>
+        <label class="grid gap-1">
+          <span class="text-xs text-[var(--color-text-muted)]">Cloudflare Tunnel ID</span>
+          <input
+            type="text"
+            class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
+            bind:value={draft.cloudflare_tunnel_id}
+          />
+        </label>
+      </div>
+
+      <label class="grid gap-1">
+        <span class="text-xs text-[var(--color-text-muted)]">Cloudflare Zone ID</span>
+        <input
+          type="text"
+          class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
+          bind:value={draft.cloudflare_zone_id}
+        />
+      </label>
+
+      <label class="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
+        <input type="checkbox" class="h-4 w-4" bind:checked={draft.cloudflare_overwrite_dns} />
+        覆盖现有 DNS 记录
+      </label>
+
+      <NamedTunnelControls {workspaceId} {service} disabled={dirty || saving} />
     {/if}
   {/if}
 
   <label class="grid gap-1">
     <span class="text-xs text-[var(--color-text-muted)]">
-      公网 URL
+      {showCloudflareToken ? "Named Tunnel 公网基地址" : "公网 URL"}
       {#if service === "actions"}
         <span class="text-[var(--color-text-muted)]">（OpenAPI 根地址）</span>
       {/if}
@@ -314,7 +386,7 @@
     <input
       type="url"
       class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-      placeholder="https://..."
+      placeholder={showCloudflareToken ? "https://dell-coding-tools-mcp.gazy.top" : "https://..."}
       bind:value={draft.public_url}
     />
   </label>

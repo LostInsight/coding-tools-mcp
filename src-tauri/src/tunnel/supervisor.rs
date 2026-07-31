@@ -11,6 +11,7 @@ use crate::settings::AppSettings;
 use crate::workspace::WorkspaceProfile;
 
 use super::cloudflare::{self, CloudflareTunnelHandle};
+use super::cloudflare_api::{self, NamedTunnelRoute};
 use super::frp::{self, FrpServerConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -37,12 +38,22 @@ pub struct TunnelStatus {
     pub state: String,
     pub public_url: String,
     pub tunnel_pid: Option<u32>,
+    pub message: String,
 }
 
 struct TunnelSession {
     public_url: String,
     pid: Option<u32>,
     child: Option<Child>,
+}
+
+struct CloudflareConfig {
+    port: u16,
+    mode: String,
+    token: String,
+    named_url: String,
+    log_name: &'static str,
+    named_route: Option<NamedTunnelRoute>,
 }
 
 struct FrpRoute {
@@ -66,6 +77,7 @@ pub struct TunnelSupervisor {
     frp_routes: HashMap<(String, TunnelServiceKind), FrpRoute>,
     frpc: HashMap<String, FrpcProcess>,
     frpc_health: HashMap<String, FrpcHealthState>,
+    last_errors: HashMap<(String, TunnelServiceKind), String>,
 }
 
 impl Default for TunnelSupervisor {
@@ -85,6 +97,7 @@ impl TunnelSupervisor {
             frp_routes: HashMap::new(),
             frpc: HashMap::new(),
             frpc_health: HashMap::new(),
+            last_errors: HashMap::new(),
         }
     }
 
@@ -222,20 +235,27 @@ impl TunnelSupervisor {
         settings: &AppSettings,
     ) -> TunnelStatus {
         let key = (profile.id.clone(), kind);
+        let message = self.last_errors.get(&key).cloned().unwrap_or_default();
         if self.session_is_running(&key) {
             if let Some(session) = self.sessions.get(&key) {
                 return TunnelStatus {
                     state: "running".into(),
                     public_url: session.public_url.clone(),
                     tunnel_pid: session.pid,
+                    message,
                 };
             }
         }
 
         TunnelStatus {
-            state: "stopped".into(),
+            state: if message.is_empty() {
+                "stopped".into()
+            } else {
+                "error".into()
+            },
             public_url: public_url_for_profile(profile, kind, settings),
             tunnel_pid: None,
+            message,
         }
     }
 
@@ -273,8 +293,39 @@ impl TunnelSupervisor {
         settings: &AppSettings,
     ) -> AppResult<TunnelStatus> {
         let key = (profile.id.clone(), kind);
+        match self.start_inner(profile, kind, settings).await {
+            Ok(mut status) => {
+                self.last_errors.remove(&key);
+                status.message.clear();
+                Ok(status)
+            }
+            Err(error) => {
+                self.last_errors.insert(key, error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    async fn start_inner(
+        &mut self,
+        profile: &WorkspaceProfile,
+        kind: TunnelServiceKind,
+        settings: &AppSettings,
+    ) -> AppResult<TunnelStatus> {
+        let key = (profile.id.clone(), kind);
         let tunnel_type = tunnel_type_for(profile, kind);
         if self.session_is_running(&key) && tunnel_type != "frp" {
+            if tunnel_type == "cloudflare" && cloudflare_config(profile, kind)?.mode == "named" {
+                let config = cloudflare_config(profile, kind)?;
+                if let Some(route) = config.named_route.as_ref() {
+                    cloudflare_api::sync_named_tunnel_route(
+                        route,
+                        &settings.proxy,
+                        tunnel_use_proxy(profile, kind),
+                    )
+                    .await?;
+                }
+            }
             return Ok(self.status(profile, kind, settings));
         }
 
@@ -332,6 +383,7 @@ impl TunnelSupervisor {
                 state: "running".into(),
                 public_url,
                 tunnel_pid: pid,
+                message: String::new(),
             });
         }
 
@@ -340,7 +392,7 @@ impl TunnelSupervisor {
             return Err(AppError::Message("当前仅支持 FRP 和 Cloudflare。".into()));
         }
 
-        let (port, mode, token, named_url, log_name) = match cloudflare_config(profile, kind) {
+        let config = match cloudflare_config(profile, kind) {
             Ok(config) => config,
             Err(error) => {
                 self.restore_route_state(&key, previous_route.take(), previous_session.take());
@@ -348,14 +400,22 @@ impl TunnelSupervisor {
             }
         };
         let use_proxy = tunnel_use_proxy(profile, kind);
-        let log_path = log_dir_for_profile(&profile.id).join(log_name);
+        if let Some(route) = config.named_route.as_ref() {
+            if let Err(error) =
+                cloudflare_api::sync_named_tunnel_route(route, &settings.proxy, use_proxy).await
+            {
+                self.restore_route_state(&key, previous_route.take(), previous_session.take());
+                return Err(error);
+            }
+        }
+        let log_path = log_dir_for_profile(&profile.id).join(config.log_name);
         let handle = cloudflare::spawn_cloudflare_tunnel(
-            port,
+            config.port,
             std::path::Path::new(&profile.path),
             &log_path,
-            mode,
-            &token,
-            &named_url,
+            &config.mode,
+            &config.token,
+            &config.named_url,
             use_proxy,
         )
         .await
@@ -382,6 +442,7 @@ impl TunnelSupervisor {
             state: "running".into(),
             public_url,
             tunnel_pid: pid,
+            message: String::new(),
         })
     }
 
@@ -391,7 +452,11 @@ impl TunnelSupervisor {
         kind: TunnelServiceKind,
         settings: &AppSettings,
     ) -> AppResult<()> {
-        self.stop_internal(&profile.id, kind, settings).await
+        let result = self.stop_internal(&profile.id, kind, settings).await;
+        if result.is_ok() {
+            self.last_errors.remove(&(profile.id.clone(), kind));
+        }
+        result
     }
 
     async fn stop_internal(
@@ -888,34 +953,18 @@ fn validate_tunnel_requirements(
 
     cloudflare::resolve_cloudflared()?;
 
-    let (mode, token, named_url) = match kind {
-        TunnelServiceKind::Mcp => (
-            profile.tunnel.cloudflare_mode.as_str(),
-            SecretStore::get(&profile.id, "cloudflare_token")?.unwrap_or_default(),
-            profile.tunnel.public_url.clone(),
-        ),
-        TunnelServiceKind::Actions => (
-            profile.actions.cloudflare_mode.as_str(),
-            if profile.actions.cloudflare_token.trim().is_empty() {
-                SecretStore::get(&profile.id, "actions_cloudflare_token")?.unwrap_or_default()
-            } else {
-                profile.actions.cloudflare_token.clone()
-            },
-            profile.actions.public_url.clone(),
-        ),
-    };
-
-    if mode == "named" {
-        if token.trim().is_empty() {
+    let config = cloudflare_config(profile, kind)?;
+    if config.mode == "named" {
+        if config.token.trim().is_empty() {
             return Err(AppError::Message(
                 "Cloudflare 命名隧道模式需要填写 Tunnel Token。".into(),
             ));
         }
-        if named_url.trim().is_empty() {
-            return Err(AppError::Message(
-                "Cloudflare 命名隧道模式需要填写固定公网地址。".into(),
-            ));
-        }
+        let route = config
+            .named_route
+            .as_ref()
+            .ok_or_else(|| AppError::Message("Cloudflare Named Tunnel 配置缺失。".into()))?;
+        route.validate()?;
     }
 
     Ok(())
@@ -931,17 +980,34 @@ fn resolve_frp_server(profile_id: &str, inline_server: &str, settings: &AppSetti
 fn cloudflare_config(
     profile: &WorkspaceProfile,
     kind: TunnelServiceKind,
-) -> AppResult<(u16, &str, String, String, &'static str)> {
+) -> AppResult<CloudflareConfig> {
     match kind {
         TunnelServiceKind::Mcp => {
             let token = SecretStore::get(&profile.id, "cloudflare_token")?.unwrap_or_default();
-            Ok((
-                profile.runtime.local_port,
-                profile.tunnel.cloudflare_mode.as_str(),
+            let mode = profile.tunnel.cloudflare_mode.clone();
+            let api_token =
+                SecretStore::get(&profile.id, "cloudflare_api_token")?.unwrap_or_default();
+            let named_route = if mode == "named" {
+                Some(NamedTunnelRoute {
+                    account_id: profile.tunnel.cloudflare_account_id.clone(),
+                    tunnel_id: profile.tunnel.cloudflare_tunnel_id.clone(),
+                    zone_id: profile.tunnel.cloudflare_zone_id.clone(),
+                    api_token,
+                    public_url: profile.tunnel.public_url.clone(),
+                    local_port: profile.runtime.local_port,
+                    overwrite_dns: profile.tunnel.cloudflare_overwrite_dns,
+                })
+            } else {
+                None
+            };
+            Ok(CloudflareConfig {
+                port: profile.runtime.local_port,
+                mode,
                 token,
-                profile.tunnel.public_url.clone(),
-                "cloudflared.log",
-            ))
+                named_url: profile.tunnel.public_url.clone(),
+                log_name: "cloudflared.log",
+                named_route,
+            })
         }
         TunnelServiceKind::Actions => {
             let token = if profile.actions.cloudflare_token.trim().is_empty() {
@@ -949,13 +1015,30 @@ fn cloudflare_config(
             } else {
                 profile.actions.cloudflare_token.clone()
             };
-            Ok((
-                profile.actions.local_port,
-                profile.actions.cloudflare_mode.as_str(),
+            let mode = profile.actions.cloudflare_mode.clone();
+            let api_token =
+                SecretStore::get(&profile.id, "actions_cloudflare_api_token")?.unwrap_or_default();
+            let named_route = if mode == "named" {
+                Some(NamedTunnelRoute {
+                    account_id: profile.actions.cloudflare_account_id.clone(),
+                    tunnel_id: profile.actions.cloudflare_tunnel_id.clone(),
+                    zone_id: profile.actions.cloudflare_zone_id.clone(),
+                    api_token,
+                    public_url: profile.actions.public_url.clone(),
+                    local_port: profile.actions.local_port,
+                    overwrite_dns: profile.actions.cloudflare_overwrite_dns,
+                })
+            } else {
+                None
+            };
+            Ok(CloudflareConfig {
+                port: profile.actions.local_port,
+                mode,
                 token,
-                profile.actions.public_url.clone(),
-                "actions-cloudflared.log",
-            ))
+                named_url: profile.actions.public_url.clone(),
+                log_name: "actions-cloudflared.log",
+                named_route,
+            })
         }
     }
 }
@@ -1203,5 +1286,22 @@ mod tests {
             supervisor.sessions.get(&second_key).and_then(|s| s.pid),
             Some(99)
         );
+    }
+
+    #[tokio::test]
+    async fn status_reports_a_failed_start_as_an_error() {
+        let settings = AppSettings::default();
+        let mut profile = frp_profile("failed-start", "failed-start");
+        profile.tunnel.tunnel_type = "unsupported".into();
+        let mut supervisor = TunnelSupervisor::new();
+
+        assert!(supervisor
+            .start(&profile, TunnelServiceKind::Mcp, &settings)
+            .await
+            .is_err());
+
+        let status = supervisor.status(&profile, TunnelServiceKind::Mcp, &settings);
+        assert_eq!(status.state, "error");
+        assert!(status.message.contains("当前仅支持"));
     }
 }

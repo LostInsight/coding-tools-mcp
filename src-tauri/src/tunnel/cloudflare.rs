@@ -306,26 +306,27 @@ pub async fn spawn_cloudflare_tunnel(
             stream_cloudflare_output(stdout, stderr, &log_path, quick, named_url, ready_tx).await;
         });
     } else {
-        let _ = ready_tx.send(QuickTunnelReady {
-            public_url: if quick {
-                None
-            } else {
-                Some(named_public_url.trim_end_matches('/').to_string())
-            },
-            named_ready: !quick,
-        });
+        drop(ready_tx);
     }
 
     let ready = time::timeout(READY_TIMEOUT, ready_rx)
         .await
         .map_err(|_| {
-            AppError::Message(format!(
-                "cloudflared 已启动，但在 {} 秒内没有返回 trycloudflare.com 公网地址。\n\
-                 请检查：1) MCP 服务是否已在本机端口 {port} 运行；2) 设置 → 通用 → 网络代理 是否配置为手动代理（如 http://127.0.0.1:7890）；\
-                 3) 查看日志 {log_hint}",
-                READY_TIMEOUT.as_secs(),
-                log_hint = log_path_for_error.display()
-            ))
+            if quick {
+                AppError::Message(format!(
+                    "cloudflared 已启动，但在 {} 秒内没有返回 trycloudflare.com 公网地址。\n\
+                     请检查：1) MCP 服务是否已在本机端口 {port} 运行；2) 设置 → 通用 → 网络代理 是否配置为手动代理（如 http://127.0.0.1:7890）；\
+                     3) 查看日志 {log_hint}",
+                    READY_TIMEOUT.as_secs(),
+                    log_hint = log_path_for_error.display()
+                ))
+            } else {
+                AppError::Message(format!(
+                    "cloudflared 已启动，但在 {} 秒内未注册 Cloudflare Named Tunnel。请检查 Tunnel Token、网络代理和日志：{}",
+                    READY_TIMEOUT.as_secs(),
+                    log_path_for_error.display()
+                ))
+            }
         })?
         .map_err(|_| AppError::Message("cloudflared 输出流意外结束。".into()))?;
 
@@ -349,8 +350,6 @@ pub async fn spawn_cloudflare_tunnel(
 
 struct QuickTunnelReady {
     public_url: Option<String>,
-    #[allow(dead_code)]
-    named_ready: bool,
 }
 
 async fn stream_cloudflare_output<R, E>(
@@ -375,44 +374,33 @@ async fn stream_cloudflare_output<R, E>(
     {
         Ok(file) => file,
         Err(_) => {
-            if let Some(tx) = ready_tx.take() {
-                let _ = tx.send(QuickTunnelReady {
-                    public_url: if quick { None } else { Some(named_url) },
-                    named_ready: !quick,
-                });
+            if quick {
+                if let Some(tx) = ready_tx.take() {
+                    let _ = tx.send(QuickTunnelReady { public_url: None });
+                }
             }
             return;
         }
     };
 
-    let send_ready = |tx: &mut Option<oneshot::Sender<QuickTunnelReady>>,
-                      url: Option<String>,
-                      named_ready: bool| {
+    let send_ready = |tx: &mut Option<oneshot::Sender<QuickTunnelReady>>, url: Option<String>| {
         if let Some(sender) = tx.take() {
-            let _ = sender.send(QuickTunnelReady {
-                public_url: url,
-                named_ready,
-            });
+            let _ = sender.send(QuickTunnelReady { public_url: url });
         }
     };
 
     let handle_line = |line: &str,
-                           public_url: &mut Option<String>,
-                           ready_tx: &mut Option<oneshot::Sender<QuickTunnelReady>>| {
+                       public_url: &mut Option<String>,
+                       ready_tx: &mut Option<oneshot::Sender<QuickTunnelReady>>| {
         if quick {
             if public_url.is_none() {
                 if let Some(url) = extract_trycloudflare_url(line) {
                     *public_url = Some(url.clone());
-                    send_ready(ready_tx, Some(url), false);
+                    send_ready(ready_tx, Some(url));
                 }
             }
-        } else {
-            let lowered = line.to_ascii_lowercase();
-            if lowered.contains("registered tunnel connection")
-                || lowered.contains("starting metrics server")
-            {
-                send_ready(ready_tx, Some(named_url.clone()), true);
-            }
+        } else if named_tunnel_is_ready(line) {
+            send_ready(ready_tx, Some(named_url.clone()));
         }
     };
 
@@ -447,7 +435,14 @@ async fn stream_cloudflare_output<R, E>(
         handle_line(&line, &mut public_url, &mut ready_tx);
     }
 
-    send_ready(&mut ready_tx, public_url, !quick);
+    if quick {
+        send_ready(&mut ready_tx, public_url);
+    }
+}
+
+fn named_tunnel_is_ready(line: &str) -> bool {
+    line.to_ascii_lowercase()
+        .contains("registered tunnel connection")
 }
 
 pub async fn stop_child(mut child: Child, pid: Option<u32>) -> AppResult<()> {
@@ -462,7 +457,7 @@ pub async fn stop_child(mut child: Child, pid: Option<u32>) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_trycloudflare_url;
+    use super::{extract_trycloudflare_url, named_tunnel_is_ready};
 
     #[test]
     fn extracts_trycloudflare_url_from_log_line() {
@@ -477,5 +472,15 @@ mod tests {
     fn ignores_invalid_hosts() {
         let line = "https://bad_host.trycloudflare.com";
         assert!(extract_trycloudflare_url(line).is_none());
+    }
+
+    #[test]
+    fn named_tunnel_requires_a_registered_connection_line() {
+        assert!(named_tunnel_is_ready(
+            "INF Registered tunnel connection connIndex=0 protocol=http2"
+        ));
+        assert!(!named_tunnel_is_ready(
+            "INF Starting metrics server on 127.0.0.1:20241/metrics"
+        ));
     }
 }

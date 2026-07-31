@@ -6,6 +6,7 @@
     workspaceId: string;
     secretKey: SecretKey;
     label?: string;
+    placeholder?: string;
     onSaved?: () => void;
     hasPending?: boolean;
   }
@@ -14,6 +15,7 @@
     workspaceId,
     secretKey,
     label = "Cloudflare Tunnel Token",
+    placeholder = "粘贴 Token",
     onSaved,
     hasPending = $bindable(false),
   }: Props = $props();
@@ -23,7 +25,7 @@
   let loading = $state(true);
   let loadSeq = 0;
 
-  const placeholder = $derived(saved && !draft ? "已保存（点击更新）" : "粘贴 Tunnel Token");
+  const inputPlaceholder = $derived(saved && !draft ? "已保存（点击更新）" : placeholder);
 
   $effect(() => {
     hasPending = draft.trim().length > 0;
@@ -69,7 +71,7 @@
   <span class="text-xs text-[var(--color-text-muted)]">{label}</span>
   <SecretInput
     bind:value={draft}
-    {placeholder}
+    placeholder={inputPlaceholder}
     disabled={loading}
     showCopy={false}
   />

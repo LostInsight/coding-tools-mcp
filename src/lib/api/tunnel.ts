@@ -6,6 +6,7 @@ export interface TunnelStatus {
   state: string;
   publicUrl: string;
   tunnelPid: number | null;
+  message: string;
 }
 
 export async function getFrpSnippet(id: string, service: TunnelService): Promise<string> {
@@ -14,6 +15,10 @@ export async function getFrpSnippet(id: string, service: TunnelService): Promise
 
 export async function startTunnel(id: string, service: TunnelService): Promise<TunnelStatus> {
   return invoke<TunnelStatus>("start_tunnel", { id, service });
+}
+
+export async function getTunnelStatus(id: string, service: TunnelService): Promise<TunnelStatus> {
+  return invoke<TunnelStatus>("get_tunnel_status", { id, service });
 }
 
 export async function stopTunnel(id: string, service: TunnelService): Promise<TunnelStatus> {

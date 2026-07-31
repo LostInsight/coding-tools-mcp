@@ -102,6 +102,10 @@
     frp_profile_id: profile?.tunnel.frp_profile_id ?? "",
     frp_server_port: profile?.tunnel.frp_server_port ?? 7000,
     cloudflare_mode: profile?.tunnel.cloudflare_mode ?? "quick",
+    cloudflare_account_id: profile?.tunnel.cloudflare_account_id ?? "",
+    cloudflare_tunnel_id: profile?.tunnel.cloudflare_tunnel_id ?? "",
+    cloudflare_zone_id: profile?.tunnel.cloudflare_zone_id ?? "",
+    cloudflare_overwrite_dns: profile?.tunnel.cloudflare_overwrite_dns ?? false,
     use_proxy: profile?.tunnel.use_proxy ?? true,
   });
 
@@ -113,6 +117,10 @@
     frp_profile_id: actions?.frp_profile_id ?? "",
     frp_server_port: actions?.frp_server_port ?? 7000,
     cloudflare_mode: actions?.cloudflare_mode ?? "quick",
+    cloudflare_account_id: actions?.cloudflare_account_id ?? "",
+    cloudflare_tunnel_id: actions?.cloudflare_tunnel_id ?? "",
+    cloudflare_zone_id: actions?.cloudflare_zone_id ?? "",
+    cloudflare_overwrite_dns: actions?.cloudflare_overwrite_dns ?? false,
     use_proxy: actions?.use_proxy ?? true,
   });
 
@@ -355,6 +363,10 @@
         frp_profile_id: config.frp_profile_id,
         frp_server_port: config.frp_server_port,
         cloudflare_mode: config.cloudflare_mode,
+        cloudflare_account_id: config.cloudflare_account_id,
+        cloudflare_tunnel_id: config.cloudflare_tunnel_id,
+        cloudflare_zone_id: config.cloudflare_zone_id,
+        cloudflare_overwrite_dns: config.cloudflare_overwrite_dns,
         use_proxy: config.use_proxy,
       },
     };
@@ -390,6 +402,10 @@
         frp_profile_id: config.frp_profile_id,
         frp_server_port: config.frp_server_port,
         cloudflare_mode: config.cloudflare_mode,
+        cloudflare_account_id: config.cloudflare_account_id,
+        cloudflare_tunnel_id: config.cloudflare_tunnel_id,
+        cloudflare_zone_id: config.cloudflare_zone_id,
+        cloudflare_overwrite_dns: config.cloudflare_overwrite_dns,
         use_proxy: config.use_proxy,
       },
     };

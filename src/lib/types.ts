@@ -11,6 +11,10 @@ export interface TunnelConfig {
   frp_profile_id?: string;
   frp_server_port?: number;
   cloudflare_mode: string;
+  cloudflare_account_id?: string;
+  cloudflare_tunnel_id?: string;
+  cloudflare_zone_id?: string;
+  cloudflare_overwrite_dns?: boolean;
   use_proxy?: boolean;
 }
 
@@ -47,6 +51,10 @@ export interface ActionsConfig {
   frp_server_port?: number;
   cloudflare_mode: string;
   cloudflare_token?: string;
+  cloudflare_account_id?: string;
+  cloudflare_tunnel_id?: string;
+  cloudflare_zone_id?: string;
+  cloudflare_overwrite_dns?: boolean;
   use_proxy?: boolean;
   local_port: number;
   permission_mode: string;

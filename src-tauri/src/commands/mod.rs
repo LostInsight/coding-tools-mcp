@@ -34,7 +34,9 @@ pub use software::{
     get_download_config, install_software, list_software, set_download_config,
     uninstall_software,
 };
-pub use tunnel::{get_frp_snippet, restart_tunnel, start_tunnel, stop_tunnel, test_tunnel};
+pub use tunnel::{
+    get_frp_snippet, get_tunnel_status, restart_tunnel, start_tunnel, stop_tunnel, test_tunnel,
+};
 pub use workspace::{
     create_workspace, delete_workspace, list_workspaces, open_workspace_directory, update_workspace,
 };

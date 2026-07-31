@@ -33,6 +33,14 @@ pub struct TunnelConfig {
     pub frp_server_port: u16,
     #[serde(default = "default_cloudflare_mode")]
     pub cloudflare_mode: String,
+    #[serde(default)]
+    pub cloudflare_account_id: String,
+    #[serde(default)]
+    pub cloudflare_tunnel_id: String,
+    #[serde(default)]
+    pub cloudflare_zone_id: String,
+    #[serde(default)]
+    pub cloudflare_overwrite_dns: bool,
     /// When true, apply global proxy from Settings → General when starting the tunnel.
     #[serde(default = "default_use_proxy")]
     pub use_proxy: bool,
@@ -99,6 +107,14 @@ pub struct ActionsConfig {
     pub cloudflare_mode: String,
     #[serde(default)]
     pub cloudflare_token: String,
+    #[serde(default)]
+    pub cloudflare_account_id: String,
+    #[serde(default)]
+    pub cloudflare_tunnel_id: String,
+    #[serde(default)]
+    pub cloudflare_zone_id: String,
+    #[serde(default)]
+    pub cloudflare_overwrite_dns: bool,
     #[serde(default = "default_use_proxy")]
     pub use_proxy: bool,
     #[serde(default = "default_actions_port")]
@@ -224,6 +240,10 @@ impl Default for TunnelConfig {
             frp_profile_id: String::new(),
             frp_server_port: default_frp_server_port(),
             cloudflare_mode: default_cloudflare_mode(),
+            cloudflare_account_id: String::new(),
+            cloudflare_tunnel_id: String::new(),
+            cloudflare_zone_id: String::new(),
+            cloudflare_overwrite_dns: false,
             use_proxy: default_use_proxy(),
         }
     }
@@ -265,6 +285,10 @@ impl Default for ActionsConfig {
             frp_server_port: default_frp_server_port(),
             cloudflare_mode: default_cloudflare_mode(),
             cloudflare_token: String::new(),
+            cloudflare_account_id: String::new(),
+            cloudflare_tunnel_id: String::new(),
+            cloudflare_zone_id: String::new(),
+            cloudflare_overwrite_dns: false,
             use_proxy: default_use_proxy(),
             local_port: default_actions_port(),
             permission_mode: default_permission_mode(),
