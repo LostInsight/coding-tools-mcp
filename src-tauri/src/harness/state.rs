@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use walkdir::WalkDir;
+
+use crate::platform::background_command;
 
 use super::model::{
     BaselineEntry, CapabilityStatus, FileChangeRecord, HarnessEvent, HarnessStatus, OperationRecord,
@@ -544,16 +545,12 @@ fn should_skip(path: &Path, root: &Path) -> bool {
 }
 
 fn git_value(root: &Path, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(root).args(args);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-    }
-    let output = cmd.output().ok()?;
+    let output = background_command("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

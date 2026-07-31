@@ -1,9 +1,10 @@
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
 use regex::Regex;
 use serde_json::{json, Value};
 
+use crate::platform::background_command;
 use crate::tools::workspace::{tool_ok, Workspace, WorkspaceError};
 
 pub fn git_status(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> {
@@ -471,7 +472,7 @@ struct GitOutput {
 }
 
 fn run_git(cwd: &std::path::Path, args: &[&str], limit: Duration) -> Result<GitOutput, WorkspaceError> {
-    let mut cmd = Command::new("git");
+    let mut cmd = background_command("git");
     cmd.arg("-C").arg(cwd).args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {

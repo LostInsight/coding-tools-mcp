@@ -247,6 +247,7 @@ async fn run_command(
     let start = Instant::now();
 
     let mut command = command_for_program(&program, &args);
+    crate::platform::configure_background_tokio_command(&mut command);
     command
         .current_dir(platform_command_path(cwd))
         .stdin(std::process::Stdio::piped())
@@ -914,7 +915,6 @@ fn command_for_program(program: &str, args: &[String]) -> Command {
     command
 }
 
-#[cfg(windows)]
 fn windows_batch_command_line(program: &str, args: &[String]) -> String {
     let mut command_line = String::from("call ");
     command_line.push_str(&windows_batch_token(&windows_command_path(program)));

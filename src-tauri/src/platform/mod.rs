@@ -47,8 +47,10 @@ pub(crate) mod windows;
 
 mod open;
 mod paths;
+mod process;
 
 pub use open::{is_allowed_url, open_path_in_file_manager, open_url};
+pub use process::{background_command, configure_background_tokio_command};
 
 #[cfg(target_os = "linux")]
 pub use linux::LinuxPlatform;

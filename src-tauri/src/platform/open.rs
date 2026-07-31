@@ -1,6 +1,6 @@
-use std::process::Command;
-
 use crate::error::{AppError, AppResult};
+
+use super::background_command;
 
 pub fn open_path_in_file_manager(path: &std::path::Path) -> AppResult<()> {
     if !path.is_dir() {
@@ -12,7 +12,7 @@ pub fn open_path_in_file_manager(path: &std::path::Path) -> AppResult<()> {
 
     #[cfg(target_os = "windows")]
     {
-        Command::new("explorer")
+        background_command("explorer")
             .arg(path)
             .spawn()
             .map_err(|err| AppError::Message(format!("无法打开目录: {err}")))
@@ -21,7 +21,7 @@ pub fn open_path_in_file_manager(path: &std::path::Path) -> AppResult<()> {
 
     #[cfg(target_os = "macos")]
     {
-        Command::new("open")
+        background_command("open")
             .arg(path)
             .spawn()
             .map_err(|err| AppError::Message(format!("无法打开目录: {err}")))
@@ -30,7 +30,7 @@ pub fn open_path_in_file_manager(path: &std::path::Path) -> AppResult<()> {
 
     #[cfg(target_os = "linux")]
     {
-        Command::new("xdg-open")
+        background_command("xdg-open")
             .arg(path)
             .spawn()
             .map_err(|err| AppError::Message(format!("无法打开目录: {err}")))
@@ -56,7 +56,7 @@ pub fn open_url(url: &str) -> AppResult<()> {
     #[cfg(target_os = "windows")]
     {
         // `start` needs an empty window title when the URL may contain `&`.
-        Command::new("cmd")
+        background_command("cmd")
             .args(["/C", "start", "", url])
             .spawn()
             .map_err(|err| AppError::Message(format!("无法打开链接: {err}")))
@@ -65,7 +65,7 @@ pub fn open_url(url: &str) -> AppResult<()> {
 
     #[cfg(target_os = "macos")]
     {
-        Command::new("open")
+        background_command("open")
             .arg(url)
             .spawn()
             .map_err(|err| AppError::Message(format!("无法打开链接: {err}")))
@@ -74,7 +74,7 @@ pub fn open_url(url: &str) -> AppResult<()> {
 
     #[cfg(target_os = "linux")]
     {
-        Command::new("xdg-open")
+        background_command("xdg-open")
             .arg(url)
             .spawn()
             .map_err(|err| AppError::Message(format!("无法打开链接: {err}")))
