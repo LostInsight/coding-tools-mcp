@@ -1,11 +1,12 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
-    extract::{Form, Path, Query, State},
+    extract::{Form, Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
-    middleware,
+    middleware::{self, Next},
     response::{Html, IntoResponse, Json, Response},
     routing::{get, post},
     Extension, Router,
@@ -137,6 +138,7 @@ async fn serve(
     paseo: crate::integrations::paseo::PaseoRuntimeContext,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let access_log_workspace_id = profile_id.to_string();
     let workspace = tools::Workspace::new(workspace_path.clone()).map_err(|e| e.message())?;
     let ctx = Arc::new(ToolContext::from_workspace_with_paseo(
         workspace,
@@ -207,7 +209,11 @@ async fn serve(
         .route("/oauth/token", post(oauth_token_post))
         .merge(protected)
         .with_state(state)
-        .layer(CorsLayer::permissive());
+        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn_with_state(
+            access_log_workspace_id,
+            log_actions_access,
+        ));
 
     append_profile_log(
         profile_id,
@@ -222,6 +228,28 @@ async fn serve(
         })
         .await?;
     Ok(())
+}
+
+async fn log_actions_access(
+    State(workspace_id): State<String>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().to_string();
+    // OAuth parameters and tool arguments must not be written to access logs.
+    let path = request.uri().path().to_string();
+    let started = Instant::now();
+    let response = next.run(request).await;
+    append_profile_log(
+        &workspace_id,
+        "actions-access.log",
+        &format!(
+            "[access] method={method} path={path} status={} duration_ms={}",
+            response.status().as_u16(),
+            started.elapsed().as_millis(),
+        ),
+    );
+    response
 }
 
 fn bind_listener(port: u16) -> Result<tokio::net::TcpListener, String> {

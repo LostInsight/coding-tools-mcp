@@ -17,7 +17,14 @@ const MAX_LOG_CHARS: usize = 4000;
 #[serde(rename_all = "camelCase")]
 pub struct LogChunk {
     pub name: String,
+    pub source: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LogFile {
+    name: &'static str,
+    source: &'static str,
 }
 
 fn profile_by_id(state: &AppState, id: &str) -> AppResult<WorkspaceProfile> {
@@ -29,26 +36,70 @@ fn profile_by_id(state: &AppState, id: &str) -> AppResult<WorkspaceProfile> {
     })
 }
 
-fn log_file_names(profile: &WorkspaceProfile, service: &str) -> AppResult<Vec<&'static str>> {
+fn log_file_names(profile: &WorkspaceProfile, service: &str) -> AppResult<Vec<LogFile>> {
     match service {
         "mcp" => {
-            let mut names = vec!["stderr.log", "stdout.log"];
+            let mut names = vec![
+                LogFile {
+                    name: "mcp-access.log",
+                    source: "access",
+                },
+                LogFile {
+                    name: "mcp-requests.log",
+                    source: "request",
+                },
+            ];
             if profile.tunnel.tunnel_type == "cloudflare" {
-                names.insert(0, "cloudflared.log");
+                names.push(LogFile {
+                    name: "cloudflared.log",
+                    source: "cloudflare",
+                });
             }
             if profile.tunnel.tunnel_type == "frp" {
-                names.insert(0, "frpc-mcp.log");
+                names.push(LogFile {
+                    name: "frpc-mcp.log",
+                    source: "frp",
+                });
             }
+            names.extend([
+                LogFile {
+                    name: "stdout.log",
+                    source: "stdout",
+                },
+                LogFile {
+                    name: "stderr.log",
+                    source: "stderr",
+                },
+            ]);
             Ok(names)
         }
         "actions" => {
-            let mut names = vec!["actions-stderr.log", "actions-stdout.log"];
+            let mut names = vec![LogFile {
+                name: "actions-access.log",
+                source: "access",
+            }];
             if profile.actions.tunnel_type == "cloudflare" {
-                names.insert(0, "actions-cloudflared.log");
+                names.push(LogFile {
+                    name: "actions-cloudflared.log",
+                    source: "cloudflare",
+                });
             }
             if profile.actions.tunnel_type == "frp" {
-                names.insert(0, "frpc-actions.log");
+                names.push(LogFile {
+                    name: "frpc-actions.log",
+                    source: "frp",
+                });
             }
+            names.extend([
+                LogFile {
+                    name: "actions-stdout.log",
+                    source: "stdout",
+                },
+                LogFile {
+                    name: "actions-stderr.log",
+                    source: "stderr",
+                },
+            ]);
             Ok(names)
         }
         other => Err(AppError::Message(format!("unknown log service: {other}"))),
@@ -87,17 +138,55 @@ pub async fn read_workspace_logs(
     let names = log_file_names(&profile, &service)?;
 
     let mut chunks = Vec::new();
-    for name in names {
-        let path = log_dir.join(name);
+    for file in names {
+        let path = log_dir.join(file.name);
         if !path.exists() {
             continue;
         }
         let content = read_log_tail(&path)?;
         chunks.push(LogChunk {
-            name: name.to_string(),
+            name: file.name.to_string(),
+            source: file.source.to_string(),
             content,
         });
     }
 
     Ok(chunks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::log_file_names;
+    use crate::workspace::WorkspaceProfile;
+
+    #[test]
+    fn mcp_logs_include_access_and_rpc_sources() {
+        let profile = WorkspaceProfile::new("C:/workspace/demo".into(), Some("Demo".into()));
+
+        let files = log_file_names(&profile, "mcp").expect("MCP log files");
+        let sources = files.iter().map(|file| file.source).collect::<Vec<_>>();
+
+        assert!(sources.contains(&"access"));
+        assert!(sources.contains(&"request"));
+        assert!(sources.contains(&"stdout"));
+        assert!(sources.contains(&"stderr"));
+    }
+
+    #[test]
+    fn cloudflare_and_frp_logs_keep_distinct_sources() {
+        let mut cloudflare =
+            WorkspaceProfile::new("C:/workspace/cloudflare".into(), Some("Cloudflare".into()));
+        cloudflare.tunnel.tunnel_type = "cloudflare".into();
+        let cloudflare_files = log_file_names(&cloudflare, "mcp").expect("Cloudflare log files");
+        assert!(cloudflare_files
+            .iter()
+            .any(|file| file.name == "cloudflared.log" && file.source == "cloudflare"));
+
+        let mut frp = WorkspaceProfile::new("C:/workspace/frp".into(), Some("FRP".into()));
+        frp.tunnel.tunnel_type = "frp".into();
+        let frp_files = log_file_names(&frp, "mcp").expect("FRP log files");
+        assert!(frp_files
+            .iter()
+            .any(|file| file.name == "frpc-mcp.log" && file.source == "frp"));
+    }
 }

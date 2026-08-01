@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
-use axum::extract::{Form, Query, State};
+use axum::extract::{Form, Query, Request, State};
 use axum::http::{header::CACHE_CONTROL, HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -129,6 +131,7 @@ async fn serve(
     shutdown: oneshot::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let profile_id = state.workspace_id.clone();
+    let access_log_workspace_id = profile_id.clone();
     let app = Router::new()
         .route("/mcp", get(mcp_discovery).post(mcp_post))
         .route(
@@ -142,7 +145,11 @@ async fn serve(
         .route("/oauth/authorize", get(oauth_authorize_get).post(oauth_authorize_post))
         .route("/oauth/token", post(oauth_token_post))
         .with_state(state)
-        .layer(CorsLayer::permissive());
+        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn_with_state(
+            access_log_workspace_id,
+            log_mcp_access,
+        ));
 
     append_profile_log(
         &profile_id,
@@ -155,6 +162,28 @@ async fn serve(
         })
         .await?;
     Ok(())
+}
+
+async fn log_mcp_access(
+    State(workspace_id): State<String>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().to_string();
+    // Do not retain the query string: OAuth parameters and user input may be sensitive.
+    let path = request.uri().path().to_string();
+    let started = Instant::now();
+    let response = next.run(request).await;
+    append_profile_log(
+        &workspace_id,
+        "mcp-access.log",
+        &format!(
+            "[access] method={method} path={path} status={} duration_ms={}",
+            response.status().as_u16(),
+            started.elapsed().as_millis(),
+        ),
+    );
+    response
 }
 
 fn bind_listener(port: u16) -> Result<tokio::net::TcpListener, String> {
@@ -377,10 +406,12 @@ fn oauth_not_configured() -> Response {
 
 #[cfg(test)]
 mod tests {
+    use axum::{middleware, routing::get, Router};
     use axum::http::header::CACHE_CONTROL;
     use axum::response::IntoResponse;
 
-    use super::{bind_listener, mcp_discovery, mcp_discovery_payload};
+    use super::{bind_listener, log_mcp_access, mcp_discovery, mcp_discovery_payload};
+    use crate::tunnel::log_dir_for_profile;
 
     #[test]
     fn bind_listener_reports_port_conflict_synchronously() {
@@ -402,5 +433,42 @@ mod tests {
         let response = mcp_discovery().await.into_response();
 
         assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    }
+
+    #[tokio::test]
+    async fn access_log_records_request_metadata_without_query_values() {
+        let workspace_id = format!("mcp-access-test-{}", uuid::Uuid::new_v4());
+        let log_dir = log_dir_for_profile(&workspace_id);
+        let _ = std::fs::remove_dir_all(&log_dir);
+        let app = Router::new()
+            .route("/mcp", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                workspace_id.clone(),
+                log_mcp_access,
+            ));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("test listener address");
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let response = reqwest::get(format!(
+            "http://{addr}/mcp?access_token=must-not-be-logged"
+        ))
+        .await
+        .expect("request test listener");
+
+        task.abort();
+        let _ = task.await;
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let content = std::fs::read_to_string(log_dir.join("mcp-access.log"))
+            .expect("read access log");
+        assert!(content.contains("method=GET path=/mcp status=200"));
+        assert!(!content.contains("access_token"));
+
+        let _ = std::fs::remove_dir_all(log_dir);
     }
 }
