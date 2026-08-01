@@ -315,8 +315,10 @@ impl TunnelSupervisor {
         let key = (profile.id.clone(), kind);
         let tunnel_type = tunnel_type_for(profile, kind);
         if self.session_is_running(&key) && tunnel_type != "frp" {
-            if tunnel_type == "cloudflare" && cloudflare_config(profile, kind)?.mode == "named" {
-                let config = cloudflare_config(profile, kind)?;
+            if tunnel_type == "cloudflare"
+                && cloudflare_config(profile, kind, settings)?.mode == "named"
+            {
+                let config = cloudflare_config(profile, kind, settings)?;
                 if let Some(route) = config.named_route.as_ref() {
                     cloudflare_api::sync_named_tunnel_route(
                         route,
@@ -392,7 +394,7 @@ impl TunnelSupervisor {
             return Err(AppError::Message("当前仅支持 FRP 和 Cloudflare。".into()));
         }
 
-        let config = match cloudflare_config(profile, kind) {
+        let config = match cloudflare_config(profile, kind, settings) {
             Ok(config) => config,
             Err(error) => {
                 self.restore_route_state(&key, previous_route.take(), previous_session.take());
@@ -919,30 +921,16 @@ fn validate_tunnel_requirements(
 ) -> AppResult<()> {
     let tunnel_type = tunnel_type_for(profile, kind);
     if tunnel_type == "frp" {
-        let (profile_id, server, subdomain, port) = match kind {
-            TunnelServiceKind::Mcp => (
-                profile.tunnel.frp_profile_id.as_str(),
-                profile.tunnel.frp_server.as_str(),
-                profile.tunnel.frp_subdomain.as_str(),
-                profile.tunnel.frp_server_port,
-            ),
-            TunnelServiceKind::Actions => (
-                profile.actions.frp_profile_id.as_str(),
-                profile.actions.frp_server.as_str(),
-                profile.actions.frp_subdomain.as_str(),
-                profile.actions.frp_server_port,
-            ),
-        };
-        let server = resolve_frp_server(profile_id, server, settings);
-        if server.trim().is_empty() {
+        let config = frp::frp_server_config(profile, kind, settings, None);
+        if config.server_addr.trim().is_empty() {
             return Err(AppError::Message(
                 "FRP 模式需要选择全局配置或填写服务器域名。".into(),
             ));
         }
-        if subdomain.trim().is_empty() {
+        if config.proxy.subdomain.trim().is_empty() {
             return Err(AppError::Message("FRP 模式需要填写子域名。".into()));
         }
-        if port == 0 && settings.find_frp_profile(profile_id).is_none() {
+        if config.server_port == 0 {
             return Err(AppError::Message("FRP 服务器端口无效。".into()));
         }
         return Ok(());
@@ -953,7 +941,7 @@ fn validate_tunnel_requirements(
 
     cloudflare::resolve_cloudflared()?;
 
-    let config = cloudflare_config(profile, kind)?;
+    let config = cloudflare_config(profile, kind, settings)?;
     if config.mode == "named" {
         if config.token.trim().is_empty() {
             return Err(AppError::Message(
@@ -970,28 +958,41 @@ fn validate_tunnel_requirements(
     Ok(())
 }
 
-fn resolve_frp_server(profile_id: &str, inline_server: &str, settings: &AppSettings) -> String {
-    if let Some(profile) = settings.find_frp_profile(profile_id) {
-        return profile.server.clone();
-    }
-    inline_server.to_string()
-}
-
 fn cloudflare_config(
     profile: &WorkspaceProfile,
     kind: TunnelServiceKind,
+    settings: &AppSettings,
 ) -> AppResult<CloudflareConfig> {
     match kind {
         TunnelServiceKind::Mcp => {
-            let token = SecretStore::get(&profile.id, "cloudflare_token")?.unwrap_or_default();
+            let tunnel_profile = settings.tunnel_profile(&profile.tunnel.frp_profile_id);
+            let token = resolve_cloudflare_secret(
+                &profile.id,
+                "cloudflare_token",
+                tunnel_profile,
+                "tunnel_profile_cloudflare_tunnel_token",
+            )?;
             let mode = profile.tunnel.cloudflare_mode.clone();
-            let api_token =
-                SecretStore::get(&profile.id, "cloudflare_api_token")?.unwrap_or_default();
+            let api_token = resolve_cloudflare_secret(
+                &profile.id,
+                "cloudflare_api_token",
+                tunnel_profile,
+                "tunnel_profile_cloudflare_api_token",
+            )?;
             let named_route = if mode == "named" {
                 Some(NamedTunnelRoute {
-                    account_id: profile.tunnel.cloudflare_account_id.clone(),
-                    tunnel_id: profile.tunnel.cloudflare_tunnel_id.clone(),
-                    zone_id: profile.tunnel.cloudflare_zone_id.clone(),
+                    account_id: resolve_cloudflare_value(
+                        &profile.tunnel.cloudflare_account_id,
+                        tunnel_profile.map(|profile| profile.cloudflare_account_id.as_str()),
+                    ),
+                    tunnel_id: resolve_cloudflare_value(
+                        &profile.tunnel.cloudflare_tunnel_id,
+                        tunnel_profile.map(|profile| profile.cloudflare_tunnel_id.as_str()),
+                    ),
+                    zone_id: resolve_cloudflare_value(
+                        &profile.tunnel.cloudflare_zone_id,
+                        tunnel_profile.map(|profile| profile.cloudflare_zone_id.as_str()),
+                    ),
                     api_token,
                     public_url: profile.tunnel.public_url.clone(),
                     local_port: profile.runtime.local_port,
@@ -1010,19 +1011,38 @@ fn cloudflare_config(
             })
         }
         TunnelServiceKind::Actions => {
+            let tunnel_profile = settings.tunnel_profile(&profile.actions.frp_profile_id);
             let token = if profile.actions.cloudflare_token.trim().is_empty() {
-                SecretStore::get(&profile.id, "actions_cloudflare_token")?.unwrap_or_default()
+                resolve_cloudflare_secret(
+                    &profile.id,
+                    "actions_cloudflare_token",
+                    tunnel_profile,
+                    "tunnel_profile_cloudflare_tunnel_token",
+                )?
             } else {
-                profile.actions.cloudflare_token.clone()
+                profile.actions.cloudflare_token.trim().to_string()
             };
             let mode = profile.actions.cloudflare_mode.clone();
-            let api_token =
-                SecretStore::get(&profile.id, "actions_cloudflare_api_token")?.unwrap_or_default();
+            let api_token = resolve_cloudflare_secret(
+                &profile.id,
+                "actions_cloudflare_api_token",
+                tunnel_profile,
+                "tunnel_profile_cloudflare_api_token",
+            )?;
             let named_route = if mode == "named" {
                 Some(NamedTunnelRoute {
-                    account_id: profile.actions.cloudflare_account_id.clone(),
-                    tunnel_id: profile.actions.cloudflare_tunnel_id.clone(),
-                    zone_id: profile.actions.cloudflare_zone_id.clone(),
+                    account_id: resolve_cloudflare_value(
+                        &profile.actions.cloudflare_account_id,
+                        tunnel_profile.map(|profile| profile.cloudflare_account_id.as_str()),
+                    ),
+                    tunnel_id: resolve_cloudflare_value(
+                        &profile.actions.cloudflare_tunnel_id,
+                        tunnel_profile.map(|profile| profile.cloudflare_tunnel_id.as_str()),
+                    ),
+                    zone_id: resolve_cloudflare_value(
+                        &profile.actions.cloudflare_zone_id,
+                        tunnel_profile.map(|profile| profile.cloudflare_zone_id.as_str()),
+                    ),
                     api_token,
                     public_url: profile.actions.public_url.clone(),
                     local_port: profile.actions.local_port,
@@ -1041,6 +1061,34 @@ fn cloudflare_config(
             })
         }
     }
+}
+
+fn resolve_cloudflare_value(workspace_value: &str, tunnel_profile_value: Option<&str>) -> String {
+    if !workspace_value.trim().is_empty() {
+        workspace_value.trim().to_string()
+    } else {
+        tunnel_profile_value.unwrap_or_default().trim().to_string()
+    }
+}
+
+fn resolve_cloudflare_secret(
+    workspace_id: &str,
+    workspace_secret_key: &str,
+    tunnel_profile: Option<&crate::settings::FrpProfile>,
+    tunnel_profile_secret_key: &str,
+) -> AppResult<String> {
+    let workspace_secret = SecretStore::get(workspace_id, workspace_secret_key)?.unwrap_or_default();
+    if !workspace_secret.trim().is_empty() {
+        return Ok(workspace_secret);
+    }
+
+    let Some(tunnel_profile) = tunnel_profile else {
+        return Ok(String::new());
+    };
+    Ok(SecretStore::get_app(tunnel_profile_secret_key, &tunnel_profile.id)?
+        .unwrap_or_default()
+        .trim()
+        .to_string())
 }
 
 pub fn log_dir_for_profile(profile_id: &str) -> PathBuf {
@@ -1078,6 +1126,46 @@ mod tests {
         profile.tunnel.frp_server_port = 7000;
         profile.tunnel.frp_subdomain = subdomain.into();
         profile
+    }
+
+    #[test]
+    fn named_tunnel_uses_global_identifiers_when_workspace_values_are_blank() {
+        let mut profile = WorkspaceProfile::new("C:/workspace/cloudflare".into(), Some("Cloudflare".into()));
+        profile.tunnel.tunnel_type = "cloudflare".into();
+        profile.tunnel.cloudflare_mode = "named".into();
+        profile.tunnel.public_url = "https://mcp.example.com".into();
+        let settings = AppSettings {
+            default_tunnel_profile_id: "shared".into(),
+            frp_profiles: vec![crate::settings::FrpProfile {
+                id: "shared".into(),
+                name: "Shared Cloudflare".into(),
+                server: String::new(),
+                server_port: 7000,
+                cloudflare_account_id: "account".into(),
+                cloudflare_tunnel_id: "tunnel".into(),
+                cloudflare_zone_id: "zone".into(),
+            }],
+            ..AppSettings::default()
+        };
+
+        let config = cloudflare_config(&profile, TunnelServiceKind::Mcp, &settings)
+            .expect("Cloudflare configuration");
+        let route = config.named_route.expect("named route");
+
+        assert_eq!(route.account_id, "account");
+        assert_eq!(route.tunnel_id, "tunnel");
+        assert_eq!(route.zone_id, "zone");
+
+        profile.tunnel.cloudflare_account_id = "workspace-account".into();
+        let override_config = cloudflare_config(&profile, TunnelServiceKind::Mcp, &settings)
+            .expect("workspace override configuration");
+        assert_eq!(
+            override_config
+                .named_route
+                .expect("workspace override route")
+                .account_id,
+            "workspace-account"
+        );
     }
 
     #[test]

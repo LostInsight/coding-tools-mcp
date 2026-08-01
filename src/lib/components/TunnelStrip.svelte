@@ -87,7 +87,7 @@
 
   {#if tunnelType === "frp"}
     <p class="mt-2 text-[11px] text-[var(--color-text-muted)]">
-      FRP 由应用自动启动 frpc。在全局「FRP 配置」中设置服务器后，工作区选择配置并填写子域名即可连接。
+      FRP 由应用自动启动 frpc。在全局「隧道配置」中设置服务器后，工作区选择配置并填写子域名即可连接。
     </p>
         <button
       type="button"

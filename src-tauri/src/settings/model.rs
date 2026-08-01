@@ -11,6 +11,12 @@ pub struct FrpProfile {
     pub server: String,
     #[serde(default = "default_frp_server_port", alias = "serverPort")]
     pub server_port: u16,
+    #[serde(default, alias = "cloudflareAccountId")]
+    pub cloudflare_account_id: String,
+    #[serde(default, alias = "cloudflareTunnelId")]
+    pub cloudflare_tunnel_id: String,
+    #[serde(default, alias = "cloudflareZoneId")]
+    pub cloudflare_zone_id: String,
 }
 
 /// Download settings for fetching frpc / cloudflared binaries.
@@ -68,6 +74,8 @@ impl Default for ProxyConfig {
 pub struct AppSettings {
     #[serde(default)]
     pub frp_profiles: Vec<FrpProfile>,
+    #[serde(default, alias = "defaultTunnelProfileId")]
+    pub default_tunnel_profile_id: String,
     #[serde(default)]
     pub last_workspace_id: String,
     #[serde(default)]
@@ -103,6 +111,7 @@ impl AppSettings {
     pub fn from_data(data: &AppData) -> Self {
         Self {
             frp_profiles: data.frp_profiles.clone(),
+            default_tunnel_profile_id: data.default_tunnel_profile_id.clone(),
             last_workspace_id: data.last_workspace_id.clone(),
             download: data.download.clone(),
             proxy: data.proxy.clone(),
@@ -114,6 +123,7 @@ impl AppSettings {
 
     pub fn apply_to(&self, data: &mut AppData) {
         data.frp_profiles = self.frp_profiles.clone();
+        data.default_tunnel_profile_id = self.default_tunnel_profile_id.clone();
         data.last_workspace_id = self.last_workspace_id.clone();
         data.download = self.download.clone();
         data.proxy = self.proxy.clone();
@@ -133,6 +143,16 @@ impl AppSettings {
         }
         self.frp_profiles.iter().find(|profile| profile.id == id)
     }
+
+    /// Use the workspace-selected profile when present; otherwise use the app default.
+    pub fn tunnel_profile(&self, id: &str) -> Option<&FrpProfile> {
+        let id = if id.trim().is_empty() {
+            self.default_tunnel_profile_id.as_str()
+        } else {
+            id
+        };
+        self.find_frp_profile(id)
+    }
 }
 
 #[allow(dead_code)]
@@ -143,13 +163,16 @@ impl FrpProfile {
             name,
             server: server.trim().to_string(),
             server_port,
+            cloudflare_account_id: String::new(),
+            cloudflare_tunnel_id: String::new(),
+            cloudflare_zone_id: String::new(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::FrpProfile;
+    use super::{AppSettings, FrpProfile};
 
     #[test]
     fn accepts_frontend_camel_case_server_port() {
@@ -175,5 +198,44 @@ mod tests {
         .expect("legacy FRP profile should deserialize");
 
         assert_eq!(profile.server_port, 7005);
+    }
+
+    #[test]
+    fn accepts_cloudflare_fields_from_the_tunnel_configuration_form() {
+        let profile: FrpProfile = serde_json::from_value(serde_json::json!({
+            "id": "p1",
+            "name": "Cloudflare",
+            "server": "",
+            "cloudflareAccountId": "account",
+            "cloudflareTunnelId": "tunnel",
+            "cloudflareZoneId": "zone"
+        }))
+        .expect("tunnel profile should deserialize");
+
+        assert_eq!(profile.cloudflare_account_id, "account");
+        assert_eq!(profile.cloudflare_tunnel_id, "tunnel");
+        assert_eq!(profile.cloudflare_zone_id, "zone");
+    }
+
+    #[test]
+    fn blank_workspace_profile_selection_resolves_the_default_tunnel_profile() {
+        let settings = AppSettings {
+            default_tunnel_profile_id: "default".into(),
+            frp_profiles: vec![FrpProfile {
+                id: "default".into(),
+                name: "Default tunnel".into(),
+                server: "frp.example.com".into(),
+                server_port: 7000,
+                cloudflare_account_id: "account".into(),
+                cloudflare_tunnel_id: "tunnel".into(),
+                cloudflare_zone_id: "zone".into(),
+            }],
+            ..AppSettings::default()
+        };
+
+        assert_eq!(
+            settings.tunnel_profile("").map(|profile| profile.name.as_str()),
+            Some("Default tunnel")
+        );
     }
 }

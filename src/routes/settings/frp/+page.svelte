@@ -17,11 +17,20 @@
   let server = $state("");
   let serverPort = $state(7000);
   let token = $state("");
+  let cloudflareAccountId = $state("");
+  let cloudflareTunnelId = $state("");
+  let cloudflareZoneId = $state("");
+  let cloudflareTunnelToken = $state("");
+  let cloudflareApiToken = $state("");
+  let makeDefault = $state(false);
 
   async function refresh() {
     loading = true;
     try {
       profiles = await listFrpProfiles();
+      if (!editingId && profiles.length === 0) {
+        makeDefault = true;
+      }
     } finally {
       loading = false;
     }
@@ -33,6 +42,12 @@
     server = "";
     serverPort = 7000;
     token = "";
+    cloudflareAccountId = "";
+    cloudflareTunnelId = "";
+    cloudflareZoneId = "";
+    cloudflareTunnelToken = "";
+    cloudflareApiToken = "";
+    makeDefault = false;
   }
 
   function editProfile(profile: FrpProfileDto) {
@@ -41,11 +56,34 @@
     server = profile.server;
     serverPort = profile.serverPort;
     token = "";
+    cloudflareAccountId = profile.cloudflareAccountId;
+    cloudflareTunnelId = profile.cloudflareTunnelId;
+    cloudflareZoneId = profile.cloudflareZoneId;
+    cloudflareTunnelToken = "";
+    cloudflareApiToken = "";
+    makeDefault = profile.isDefault;
   }
 
   async function save() {
-    if (!name.trim() || !server.trim()) {
-      await message("请填写配置名称和服务器地址。", { title: "无法保存", kind: "warning" });
+    const cloudflareValues = [cloudflareAccountId, cloudflareTunnelId, cloudflareZoneId].filter(
+      (value) => value.trim(),
+    );
+    if (!name.trim()) {
+      await message("请填写配置名称。", { title: "无法保存", kind: "warning" });
+      return;
+    }
+    if (!server.trim() && cloudflareValues.length === 0) {
+      await message("请至少填写 FRP 服务器或完整的 Cloudflare Named Tunnel 标识。", {
+        title: "无法保存",
+        kind: "warning",
+      });
+      return;
+    }
+    if (cloudflareValues.length > 0 && cloudflareValues.length !== 3) {
+      await message("Cloudflare Account ID、Tunnel ID 与 Zone ID 必须同时填写。", {
+        title: "无法保存",
+        kind: "warning",
+      });
       return;
     }
     saving = true;
@@ -56,8 +94,14 @@
           name: name.trim(),
           server: server.trim(),
           serverPort,
+          cloudflareAccountId: cloudflareAccountId.trim(),
+          cloudflareTunnelId: cloudflareTunnelId.trim(),
+          cloudflareZoneId: cloudflareZoneId.trim(),
         },
         token.trim() || undefined,
+        cloudflareTunnelToken.trim() || undefined,
+        cloudflareApiToken.trim() || undefined,
+        makeDefault,
       );
       resetForm();
       await refresh();
@@ -86,10 +130,9 @@
 <section class="page-scroll">
   <header class="page-header">
     <p class="page-kicker">全局设置</p>
-    <h2 class="page-title">FRP 配置</h2>
+    <h2 class="page-title">隧道配置</h2>
     <p class="mt-2 max-w-2xl text-sm text-[var(--color-text-muted)]">
-      在此配置 FRP 服务器、端口与 Token。各工作区只需选择配置并填写自己的子域名；修改子域名后保存会自动更新
-      frpc 配置并重启隧道。
+      管理共享的 FRP 与 Cloudflare Named Tunnel 参数。工作区留空时会继承默认配置，工作区填写的值始终优先。
     </p>
   </header>
 
@@ -108,12 +151,12 @@
           <input
             type="text"
             class="tx-input"
-            placeholder="公司 FRP"
+            placeholder="公司隧道"
             bind:value={name}
           />
         </label>
         <label class="grid gap-1">
-          <span class="text-xs text-[var(--color-text-muted)]">服务器域名</span>
+          <span class="text-xs text-[var(--color-text-muted)]">FRP 服务器域名（可选）</span>
           <input
             type="text"
             class="tx-input tx-mono"
@@ -122,7 +165,7 @@
           />
         </label>
         <label class="grid gap-1">
-          <span class="text-xs text-[var(--color-text-muted)]">端口</span>
+          <span class="text-xs text-[var(--color-text-muted)]">FRP 端口</span>
           <input
             type="number"
             min="1"
@@ -140,6 +183,49 @@
             placeholder="frp auth token"
             showCopy={false}
           />
+        </label>
+        <div class="border-t border-[var(--color-border)] pt-3">
+          <p class="text-xs font-medium text-[var(--color-text-secondary)]">Cloudflare Named Tunnel（可选）</p>
+          <div class="mt-3 grid gap-3 sm:grid-cols-2">
+            <label class="grid gap-1">
+              <span class="text-xs text-[var(--color-text-muted)]">Account ID</span>
+              <input type="text" class="tx-input tx-mono" bind:value={cloudflareAccountId} />
+            </label>
+            <label class="grid gap-1">
+              <span class="text-xs text-[var(--color-text-muted)]">Tunnel ID</span>
+              <input type="text" class="tx-input tx-mono" bind:value={cloudflareTunnelId} />
+            </label>
+          </div>
+          <label class="mt-3 grid gap-1">
+            <span class="text-xs text-[var(--color-text-muted)]">Zone ID</span>
+            <input type="text" class="tx-input tx-mono" bind:value={cloudflareZoneId} />
+          </label>
+          <div class="mt-3 grid gap-3 sm:grid-cols-2">
+            <label class="grid gap-1">
+              <span class="text-xs text-[var(--color-text-muted)]">
+                Tunnel Token {editingId ? "（留空则保持不变）" : ""}
+              </span>
+              <SecretInput
+                bind:value={cloudflareTunnelToken}
+                placeholder="cloudflared tunnel token"
+                showCopy={false}
+              />
+            </label>
+            <label class="grid gap-1">
+              <span class="text-xs text-[var(--color-text-muted)]">
+                API Token {editingId ? "（留空则保持不变）" : ""}
+              </span>
+              <SecretInput
+                bind:value={cloudflareApiToken}
+                placeholder="Cloudflare API token"
+                showCopy={false}
+              />
+            </label>
+          </div>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
+          <input type="checkbox" class="h-4 w-4" bind:checked={makeDefault} />
+          作为默认隧道配置
         </label>
         <div class="flex gap-2 pt-1">
           <button
@@ -167,7 +253,7 @@
       {#if loading}
         <p class="mt-4 text-sm text-[var(--color-text-muted)]">加载中…</p>
       {:else if profiles.length === 0}
-        <p class="mt-4 text-sm text-[var(--color-text-muted)]">暂无 FRP 配置。</p>
+        <p class="mt-4 text-sm text-[var(--color-text-muted)]">暂无隧道配置。</p>
       {:else}
         <ul class="mt-4 space-y-2">
           {#each profiles as profile (profile.id)}
@@ -175,10 +261,17 @@
               class="tx-panel flex items-center justify-between gap-3 px-3 py-2"
             >
               <div class="min-w-0">
-                <p class="truncate text-sm font-medium">{profile.name}</p>
+                <p class="truncate text-sm font-medium">
+                  {profile.name}{profile.isDefault ? " · 默认" : ""}
+                </p>
                 <p class="truncate font-mono text-xs text-[var(--color-text-muted)]">
-                  {profile.server}:{profile.serverPort}
-                  · Token {profile.hasToken ? "已配置" : "未配置"}
+                  {profile.server ? `${profile.server}:${profile.serverPort}` : "未配置 FRP"}
+                  {#if profile.cloudflareAccountId}
+                    · Cloudflare Named Tunnel 已配置
+                  {/if}
+                  · FRP Token {profile.hasToken ? "已配置" : "未配置"}
+                  · Cloudflare Token {profile.hasCloudflareTunnelToken ? "已配置" : "未配置"}
+                  · API Token {profile.hasCloudflareApiToken ? "已配置" : "未配置"}
                 </p>
               </div>
               <div class="flex shrink-0 gap-2">

@@ -97,12 +97,23 @@ pub fn frp_server_config(
         ),
     };
 
-    let (server_addr, server_port) =
-        if let Some(frp_profile) = settings.find_frp_profile(profile_id) {
-            (frp_profile.server.clone(), frp_profile.server_port)
-        } else {
-            (server_addr, server_port)
-        };
+    // An explicitly selected shared profile keeps the legacy override behavior.
+    // With no selection, workspace values win and the app default fills only blanks.
+    let use_tunnel_profile = !profile_id.trim().is_empty() || server_addr.trim().is_empty();
+    let (server_addr, server_port) = if use_tunnel_profile {
+        settings
+            .tunnel_profile(profile_id)
+            .filter(|tunnel_profile| !tunnel_profile.server.trim().is_empty())
+            .map(|tunnel_profile| {
+                (
+                    tunnel_profile.server.clone(),
+                    tunnel_profile.server_port,
+                )
+            })
+            .unwrap_or((server_addr, server_port))
+    } else {
+        (server_addr, server_port)
+    };
 
     let token = token_override.or_else(|| resolve_frp_token(profile_id, profile, kind, settings));
 
@@ -120,16 +131,6 @@ fn resolve_frp_token(
     kind: TunnelServiceKind,
     settings: &AppSettings,
 ) -> Option<String> {
-    if !profile_id.trim().is_empty() {
-        if let Ok(Some(token)) =
-            crate::secret::SecretStore::get_app("frp_profile_token", profile_id)
-        {
-            if !token.trim().is_empty() {
-                return Some(token);
-            }
-        }
-    }
-
     let workspace_key = match kind {
         TunnelServiceKind::Mcp => "frp_token",
         TunnelServiceKind::Actions => "actions_frp_token",
@@ -137,6 +138,16 @@ fn resolve_frp_token(
     if let Ok(Some(token)) = crate::secret::SecretStore::get(&workspace.id, workspace_key) {
         if !token.trim().is_empty() {
             return Some(token);
+        }
+    }
+
+    if let Some(tunnel_profile) = settings.tunnel_profile(profile_id) {
+        if let Ok(Some(token)) =
+            crate::secret::SecretStore::get_app("frp_profile_token", &tunnel_profile.id)
+        {
+            if !token.trim().is_empty() {
+                return Some(token);
+            }
         }
     }
 
@@ -288,6 +299,9 @@ mod tests {
                 name: "Main".into(),
                 server: "frp.example.com".into(),
                 server_port: 7000,
+                cloudflare_account_id: String::new(),
+                cloudflare_tunnel_id: String::new(),
+                cloudflare_zone_id: String::new(),
             }],
             ..AppSettings::default()
         };
@@ -313,6 +327,9 @@ mod tests {
                 name: "Main".into(),
                 server: "frp.example.com".into(),
                 server_port: 7000,
+                cloudflare_account_id: String::new(),
+                cloudflare_tunnel_id: String::new(),
+                cloudflare_zone_id: String::new(),
             }],
             ..AppSettings::default()
         };
@@ -458,11 +475,38 @@ mod tests {
                 name: "Main".into(),
                 server: "frp.example.com".into(),
                 server_port: 7000,
+                cloudflare_account_id: String::new(),
+                cloudflare_tunnel_id: String::new(),
+                cloudflare_zone_id: String::new(),
             }],
             ..AppSettings::default()
         };
         crate::secret::SecretStore::set_app("frp_profile_token", "p1", "shared-token").unwrap();
         let config = frp_server_config(&profile, TunnelServiceKind::Mcp, &settings, None);
         assert_eq!(config.token.as_deref(), Some("shared-token"));
+    }
+
+    #[test]
+    fn blank_workspace_frp_values_inherit_the_default_tunnel_profile() {
+        let mut profile = WorkspaceProfile::new("/tmp/demo".into(), Some("Demo".into()));
+        profile.tunnel.frp_subdomain = "demo".into();
+        let settings = AppSettings {
+            default_tunnel_profile_id: "p1".into(),
+            frp_profiles: vec![FrpProfile {
+                id: "p1".into(),
+                name: "Default tunnel".into(),
+                server: "frp.example.com".into(),
+                server_port: 7001,
+                cloudflare_account_id: String::new(),
+                cloudflare_tunnel_id: String::new(),
+                cloudflare_zone_id: String::new(),
+            }],
+            ..AppSettings::default()
+        };
+
+        let config = frp_server_config(&profile, TunnelServiceKind::Mcp, &settings, None);
+
+        assert_eq!(config.server_addr, "frp.example.com");
+        assert_eq!(config.server_port, 7001);
     }
 }

@@ -179,6 +179,7 @@ export interface FrpProfileSummary {
   name: string;
   server: string;
   serverPort: number;
+  isDefault?: boolean;
 }
 
 export function frpPublicUrl(
@@ -192,8 +193,12 @@ export function frpPublicUrl(
   if (tunnelType !== "frp" || !frpSubdomain) {
     return publicUrl.replace(/\/$/, "");
   }
-  const server =
-    profiles.find((profile) => profile.id === frpProfileId)?.server ?? frpServer;
+  const selectedProfile = frpProfileId
+    ? profiles.find((profile) => profile.id === frpProfileId)
+    : frpServer
+      ? undefined
+      : profiles.find((profile) => profile.isDefault);
+  const server = selectedProfile?.server || frpServer;
   if (!server) return publicUrl.replace(/\/$/, "");
   return `https://${frpSubdomain}.${server}`;
 }

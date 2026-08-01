@@ -76,6 +76,7 @@ pub fn maybe_backup_legacy_files(path: &Path) -> AppResult<()> {
 
 fn merge_settings(data: &mut AppData, settings: AppSettings) {
     data.frp_profiles = settings.frp_profiles;
+    data.default_tunnel_profile_id = settings.default_tunnel_profile_id;
     data.last_workspace_id = settings.last_workspace_id;
     data.download = settings.download;
     data.proxy = settings.proxy;

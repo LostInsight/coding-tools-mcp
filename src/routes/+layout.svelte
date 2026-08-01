@@ -121,7 +121,7 @@
       class="tx-settings-link {$page.url.pathname === '/settings/frp' ? 'active' : ''}"
       onclick={openFrpSettings}
     >
-      FRP 配置
+      隧道配置
     </button>
     <button
       type="button"

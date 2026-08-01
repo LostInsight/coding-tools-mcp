@@ -11,6 +11,8 @@ pub struct AppData {
     #[serde(default)]
     pub frp_profiles: Vec<FrpProfile>,
     #[serde(default)]
+    pub default_tunnel_profile_id: String,
+    #[serde(default)]
     pub last_workspace_id: String,
     #[serde(default)]
     pub download: DownloadConfig,

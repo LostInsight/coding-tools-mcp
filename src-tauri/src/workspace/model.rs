@@ -425,10 +425,16 @@ fn computed_public_url(
     settings: &AppSettings,
 ) -> String {
     if tunnel_type == "frp" {
-        let server = settings
-            .find_frp_profile(frp_profile_id)
-            .map(|profile| profile.server.as_str())
-            .unwrap_or(frp_server);
+        let use_tunnel_profile = !frp_profile_id.trim().is_empty() || frp_server.trim().is_empty();
+        let server = if use_tunnel_profile {
+            settings
+                .tunnel_profile(frp_profile_id)
+                .map(|profile| profile.server.as_str())
+                .filter(|server| !server.trim().is_empty())
+                .unwrap_or(frp_server)
+        } else {
+            frp_server
+        };
         if !server.is_empty() && !frp_subdomain.is_empty() {
             return format!("https://{frp_subdomain}.{server}");
         }
@@ -441,6 +447,7 @@ mod paseo_config_tests {
     use serde_json::json;
 
     use super::WorkspaceProfile;
+    use crate::settings::{AppSettings, FrpProfile};
 
     #[test]
     fn legacy_workspace_without_integrations_defaults_paseo_to_disabled() {
@@ -467,5 +474,29 @@ mod paseo_config_tests {
         let loaded: WorkspaceProfile =
             serde_json::from_value(serde_json::to_value(profile).unwrap()).unwrap();
         assert_eq!(loaded.integrations.paseo.access_mode.as_str(), "assist");
+    }
+
+    #[test]
+    fn blank_workspace_frp_settings_use_the_default_tunnel_profile_for_public_urls() {
+        let mut workspace = WorkspaceProfile::new(".".into(), Some("Workspace".into()));
+        workspace.tunnel.frp_subdomain = "mcp".into();
+        let settings = AppSettings {
+            default_tunnel_profile_id: "default".into(),
+            frp_profiles: vec![FrpProfile {
+                id: "default".into(),
+                name: "Default".into(),
+                server: "frp.example.com".into(),
+                server_port: 7000,
+                cloudflare_account_id: String::new(),
+                cloudflare_tunnel_id: String::new(),
+                cloudflare_zone_id: String::new(),
+            }],
+            ..AppSettings::default()
+        };
+
+        assert_eq!(
+            workspace.effective_public_url_with(&settings),
+            "https://mcp.frp.example.com"
+        );
     }
 }

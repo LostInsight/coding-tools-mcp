@@ -5,7 +5,13 @@ export interface FrpProfileDto {
   name: string;
   server: string;
   serverPort: number;
+  cloudflareAccountId: string;
+  cloudflareTunnelId: string;
+  cloudflareZoneId: string;
   hasToken: boolean;
+  hasCloudflareTunnelToken: boolean;
+  hasCloudflareApiToken: boolean;
+  isDefault: boolean;
 }
 
 export interface FrpProfileInput {
@@ -13,6 +19,9 @@ export interface FrpProfileInput {
   name: string;
   server: string;
   serverPort: number;
+  cloudflareAccountId: string;
+  cloudflareTunnelId: string;
+  cloudflareZoneId: string;
 }
 
 export async function listFrpProfiles(): Promise<FrpProfileDto[]> {
@@ -22,8 +31,17 @@ export async function listFrpProfiles(): Promise<FrpProfileDto[]> {
 export async function saveFrpProfile(
   profile: FrpProfileInput,
   token?: string,
+  cloudflareTunnelToken?: string,
+  cloudflareApiToken?: string,
+  makeDefault?: boolean,
 ): Promise<FrpProfileDto> {
-  return invoke<FrpProfileDto>("save_frp_profile", { profile, token });
+  return invoke<FrpProfileDto>("save_frp_profile", {
+    profile,
+    token,
+    cloudflareTunnelToken,
+    cloudflareApiToken,
+    makeDefault,
+  });
 }
 
 export async function getLastWorkspaceId(): Promise<string> {

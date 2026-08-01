@@ -78,7 +78,11 @@
     frpProfiles.find((profile) => profile.id === draft.frp_profile_id) ?? null,
   );
 
-  const useGlobalProfile = $derived(Boolean(draft.frp_profile_id && selectedProfile));
+  const defaultProfile = $derived(frpProfiles.find((profile) => profile.isDefault) ?? null);
+  const resolvedProfile = $derived(
+    selectedProfile ?? (draft.frp_profile_id ? null : defaultProfile),
+  );
+  const useGlobalProfile = $derived(Boolean(resolvedProfile));
 
   const dirty = $derived(
     draft.type !== config.type ||
@@ -100,7 +104,7 @@
   const showFrp = $derived(draft.type === "frp");
   const showCloudflare = $derived(draft.type === "cloudflare");
   const showCloudflareToken = $derived(showCloudflare && draft.cloudflare_mode === "named");
-  const showLegacyFrpToken = $derived(showFrp && !useGlobalProfile);
+  const showLegacyFrpToken = $derived(showFrp && legacyFrpOpen);
   const canTest = $derived(draft.type === "frp" || draft.type === "cloudflare");
 
   $effect(() => {
@@ -222,32 +226,33 @@
 
   {#if showFrp}
     <label class="grid gap-1">
-      <span class="text-xs text-[var(--color-text-muted)]">FRP 配置</span>
+      <span class="text-xs text-[var(--color-text-muted)]">共享隧道配置</span>
       <select
         class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-sm"
         bind:value={draft.frp_profile_id}
       >
-        <option value="">手动填写（旧版）</option>
+        <option value="">不指定（继承默认配置）</option>
         {#each frpProfiles as profile (profile.id)}
           <option value={profile.id}>
-            {profile.name} · {profile.server}:{profile.serverPort}
+            {profile.name}{profile.isDefault ? " · 默认" : ""}
           </option>
         {/each}
       </select>
       {#if frpProfiles.length === 0}
         <p class="text-[11px] text-[var(--color-text-muted)]">
-          请先在侧边栏「FRP 配置」中添加全局服务器配置。
+          请先在侧边栏「隧道配置」中添加共享配置。
         </p>
       {/if}
     </label>
 
-    {#if useGlobalProfile && selectedProfile}
+    {#if useGlobalProfile && resolvedProfile}
       <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-xs">
         <p class="text-[var(--color-text-secondary)]">
-          服务器：{selectedProfile.server}:{selectedProfile.serverPort}
+          {selectedProfile ? "已选配置" : "默认配置"}：{resolvedProfile.name}
         </p>
         <p class="mt-1 text-[var(--color-text-muted)]">
-          Token：{selectedProfile.hasToken ? "已配置" : "未配置"}
+          FRP 服务器：{resolvedProfile.server ? `${resolvedProfile.server}:${resolvedProfile.serverPort}` : "未配置"}
+          · Token：{resolvedProfile.hasToken ? "已配置" : "未配置"}
         </p>
       </div>
     {/if}
@@ -265,19 +270,17 @@
       </p>
     </label>
 
-    {#if !useGlobalProfile}
-      <button
-        type="button"
-        class="text-left text-xs text-[var(--color-accent)] hover:underline"
-        onclick={() => {
-          legacyFrpOpen = !legacyFrpOpen;
-        }}
-      >
-        {legacyFrpOpen ? "收起" : "展开"}手动 FRP 配置
-      </button>
-    {/if}
+    <button
+      type="button"
+      class="text-left text-xs text-[var(--color-accent)] hover:underline"
+      onclick={() => {
+        legacyFrpOpen = !legacyFrpOpen;
+      }}
+    >
+      {legacyFrpOpen ? "收起" : useGlobalProfile ? "添加工作区覆盖" : "展开"}手动 FRP 配置
+    </button>
 
-    {#if !useGlobalProfile && legacyFrpOpen}
+    {#if legacyFrpOpen}
       <label class="grid gap-1">
         <span class="text-xs text-[var(--color-text-muted)]">FRP 服务器</span>
         <input
@@ -305,13 +308,48 @@
           bind:hasPending={tunnelTokenPending}
           {workspaceId}
           secretKey={tunnelSecretKey}
-          label="FRP Token（可选）"
+          label={useGlobalProfile ? "FRP Token（工作区覆盖）" : "FRP Token（可选）"}
         />
       {/if}
     {/if}
   {/if}
 
   {#if showCloudflare}
+    <label class="grid gap-1">
+      <span class="text-xs text-[var(--color-text-muted)]">共享隧道配置</span>
+      <select
+        class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-sm"
+        bind:value={draft.frp_profile_id}
+      >
+        <option value="">不指定（继承默认配置）</option>
+        {#each frpProfiles as profile (profile.id)}
+          <option value={profile.id}>
+            {profile.name}{profile.isDefault ? " · 默认" : ""}
+          </option>
+        {/each}
+      </select>
+      {#if frpProfiles.length === 0}
+        <p class="text-[11px] text-[var(--color-text-muted)]">
+          请先在侧边栏「隧道配置」中添加共享配置。
+        </p>
+      {/if}
+    </label>
+
+    {#if useGlobalProfile && resolvedProfile}
+      <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-xs">
+        <p class="text-[var(--color-text-secondary)]">
+          {selectedProfile ? "已选配置" : "默认配置"}：{resolvedProfile.name}
+        </p>
+        <p class="mt-1 text-[var(--color-text-muted)]">
+          Cloudflare 标识：{resolvedProfile.cloudflareAccountId && resolvedProfile.cloudflareTunnelId && resolvedProfile.cloudflareZoneId
+            ? "已配置"
+            : "未配置"}
+          · Tunnel Token：{resolvedProfile.hasCloudflareTunnelToken ? "已配置" : "未配置"}
+          · API Token：{resolvedProfile.hasCloudflareApiToken ? "已配置" : "未配置"}
+        </p>
+      </div>
+    {/if}
+
     <label class="grid gap-1">
       <span class="text-xs text-[var(--color-text-muted)]">Cloudflare 模式</span>
       <select
@@ -329,19 +367,19 @@
         bind:hasPending={tunnelTokenPending}
         {workspaceId}
         secretKey={tunnelSecretKey}
-        label="Cloudflare Tunnel Token"
+        label={useGlobalProfile ? "Cloudflare Tunnel Token（工作区覆盖）" : "Cloudflare Tunnel Token"}
       />
       <SecretTokenField
         bind:this={apiTokenField}
         bind:hasPending={apiTokenPending}
         {workspaceId}
         secretKey={apiSecretKey}
-        label="Cloudflare API Token"
+        label={useGlobalProfile ? "Cloudflare API Token（工作区覆盖）" : "Cloudflare API Token"}
       />
 
       <div class="grid gap-3 sm:grid-cols-2">
         <label class="grid gap-1">
-          <span class="text-xs text-[var(--color-text-muted)]">Cloudflare Account ID</span>
+          <span class="text-xs text-[var(--color-text-muted)]">Cloudflare Account ID（留空继承）</span>
           <input
             type="text"
             class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
@@ -349,7 +387,7 @@
           />
         </label>
         <label class="grid gap-1">
-          <span class="text-xs text-[var(--color-text-muted)]">Cloudflare Tunnel ID</span>
+          <span class="text-xs text-[var(--color-text-muted)]">Cloudflare Tunnel ID（留空继承）</span>
           <input
             type="text"
             class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
@@ -359,7 +397,7 @@
       </div>
 
       <label class="grid gap-1">
-        <span class="text-xs text-[var(--color-text-muted)]">Cloudflare Zone ID</span>
+        <span class="text-xs text-[var(--color-text-muted)]">Cloudflare Zone ID（留空继承）</span>
         <input
           type="text"
           class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
