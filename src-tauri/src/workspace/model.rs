@@ -62,6 +62,20 @@ pub struct RuntimeConfig {
     pub workspace_local_entries: bool,
     #[serde(default = "default_workspace_script_extensions")]
     pub workspace_script_extensions: String,
+    #[serde(default)]
+    pub filesystem: FilesystemPolicyConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilesystemPolicyConfig {
+    #[serde(default = "default_filesystem_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub allowed_paths: Vec<String>,
+    #[serde(default)]
+    pub denied_paths: Vec<String>,
+    #[serde(default)]
+    pub denied_drives: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +192,21 @@ fn default_workspace_script_extensions() -> String {
     ".exe,.bat,.cmd,.ps1".to_string()
 }
 
+fn default_filesystem_mode() -> String {
+    "workspace_only".to_string()
+}
+
+impl Default for FilesystemPolicyConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_filesystem_mode(),
+            allowed_paths: Vec::new(),
+            denied_paths: Vec::new(),
+            denied_drives: Vec::new(),
+        }
+    }
+}
+
 fn default_max_patch_bytes() -> u32 {
     200_000
 }
@@ -217,6 +246,7 @@ impl Default for RuntimeConfig {
             allowed_commands: default_allowed_commands(),
             workspace_local_entries: default_workspace_local_entries(),
             workspace_script_extensions: default_workspace_script_extensions(),
+            filesystem: FilesystemPolicyConfig::default(),
         }
     }
 }

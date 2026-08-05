@@ -5,6 +5,10 @@
     allowedCommands: string;
     workspaceLocalEntries: boolean;
     workspaceScriptExtensions: string;
+    filesystemMode: string;
+    allowedPaths: string;
+    deniedPaths: string;
+    deniedDrives: string;
   }
 
   interface Props {
@@ -13,6 +17,10 @@
     allowedCommands: string;
     workspaceLocalEntries: boolean;
     workspaceScriptExtensions: string;
+    filesystemMode: string;
+    allowedPaths: string;
+    deniedPaths: string;
+    deniedDrives: string;
     onSave: (draft: RuntimePolicyDraft) => void | Promise<void>;
   }
 
@@ -28,17 +36,21 @@
     { value: "dangerous", label: "完全放开" },
   ] as const;
 
-  let { toolProfile, permissionMode, allowedCommands, workspaceLocalEntries, workspaceScriptExtensions, onSave }: Props = $props();
+  let { toolProfile, permissionMode, allowedCommands, workspaceLocalEntries, workspaceScriptExtensions, filesystemMode, allowedPaths, deniedPaths, deniedDrives, onSave }: Props = $props();
 
   let draftProfile = $state("full");
   let draftMode = $state("trusted");
   let draftCommands = $state("");
   let draftLocalEntries = $state(true);
   let draftExtensions = $state(".exe,.bat,.cmd,.ps1");
+  let draftFilesystemMode = $state("workspace_only");
+  let draftAllowedPaths = $state("");
+  let draftDeniedPaths = $state("");
+  let draftDeniedDrives = $state("");
   let saving = $state(false);
 
   const dirty = $derived(
-    draftProfile !== toolProfile || draftMode !== permissionMode || draftCommands !== allowedCommands || draftLocalEntries !== workspaceLocalEntries || draftExtensions !== workspaceScriptExtensions,
+    draftProfile !== toolProfile || draftMode !== permissionMode || draftCommands !== allowedCommands || draftLocalEntries !== workspaceLocalEntries || draftExtensions !== workspaceScriptExtensions || draftFilesystemMode !== filesystemMode || draftAllowedPaths !== allowedPaths || draftDeniedPaths !== deniedPaths || draftDeniedDrives !== deniedDrives,
   );
 
   $effect(() => {
@@ -47,13 +59,17 @@
     draftCommands = allowedCommands;
     draftLocalEntries = workspaceLocalEntries;
     draftExtensions = workspaceScriptExtensions;
+    draftFilesystemMode = filesystemMode;
+    draftAllowedPaths = allowedPaths;
+    draftDeniedPaths = deniedPaths;
+    draftDeniedDrives = deniedDrives;
   });
 
   async function save() {
     if (saving || !dirty) return;
     saving = true;
     try {
-      await onSave({ toolProfile: draftProfile, permissionMode: draftMode, allowedCommands: draftCommands.trim(), workspaceLocalEntries: draftLocalEntries, workspaceScriptExtensions: draftExtensions.trim() });
+      await onSave({ toolProfile: draftProfile, permissionMode: draftMode, allowedCommands: draftCommands.trim(), workspaceLocalEntries: draftLocalEntries, workspaceScriptExtensions: draftExtensions.trim(), filesystemMode: draftFilesystemMode, allowedPaths: draftAllowedPaths.trim(), deniedPaths: draftDeniedPaths.trim(), deniedDrives: draftDeniedDrives.trim() });
     } finally {
       saving = false;
     }
@@ -77,6 +93,26 @@
         <option value={option.value}>{option.label}</option>
       {/each}
     </select>
+  </label>
+  <label class="grid gap-1">
+    <span class="text-xs text-[var(--color-text-muted)]">文件访问模式</span>
+    <select class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-sm" bind:value={draftFilesystemMode}>
+      <option value="workspace_only">仅 Workspace</option>
+      <option value="workspace_and_skills">Workspace 与 Skills</option>
+      <option value="allowlist">仅显式允许目录</option>
+    </select>
+  </label>
+  <label class="grid gap-1">
+    <span class="text-xs text-[var(--color-text-muted)]">允许目录（逗号分隔，优先级最高）</span>
+    <input type="text" class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm" placeholder="C:\\Users\\Alvin" bind:value={draftAllowedPaths} />
+  </label>
+  <label class="grid gap-1">
+    <span class="text-xs text-[var(--color-text-muted)]">禁止目录（逗号分隔）</span>
+    <input type="text" class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm" placeholder="C:\\Windows" bind:value={draftDeniedPaths} />
+  </label>
+  <label class="grid gap-1">
+    <span class="text-xs text-[var(--color-text-muted)]">禁止驱动器（逗号分隔）</span>
+    <input type="text" class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm" placeholder="C:,D:" bind:value={draftDeniedDrives} />
   </label>
   <label class="grid gap-1">
     <span class="text-xs text-[var(--color-text-muted)]">系统命令（逗号分隔）</span>

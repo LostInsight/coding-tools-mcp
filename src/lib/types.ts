@@ -28,6 +28,14 @@ export interface RuntimeConfig {
   allowed_commands?: string;
   workspace_local_entries?: boolean;
   workspace_script_extensions?: string;
+  filesystem?: FilesystemPolicyConfig;
+}
+
+export interface FilesystemPolicyConfig {
+  mode: "workspace_only" | "workspace_and_skills" | "allowlist" | string;
+  allowed_paths: string[];
+  denied_paths: string[];
+  denied_drives: string[];
 }
 
 export interface ActionsConfig {

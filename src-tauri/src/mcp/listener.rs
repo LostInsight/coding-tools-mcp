@@ -50,7 +50,8 @@ pub fn spawn_listener(
     runtime: RuntimeConfig,
 ) -> Result<(ShutdownSender, tauri::async_runtime::JoinHandle<()>), String> {
     let workspace_display = workspace_path.display().to_string();
-    let workspace = Workspace::new(workspace_path).map_err(|e| e.message())?;
+    let workspace = Workspace::with_filesystem_policy(workspace_path, &runtime.filesystem)
+        .map_err(|e| e.message())?;
     let policy = PolicySettings::from_runtime(&runtime);
     let mcp = new_state(
         workspace,

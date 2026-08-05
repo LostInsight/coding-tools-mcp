@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
 
@@ -234,6 +234,9 @@ pub fn validate_command_for_workspace(
             }
         }
     }
+    let command_base = workspace
+        .map(|value| value.root().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
     if has_forbidden_shell_syntax(command) {
         return Err(PolicyError(
             "Shell chaining, redirection and expansion are not allowed".into(),
@@ -247,9 +250,9 @@ pub fn validate_command_for_workspace(
             "PROTECTED_REPOSITORY_ASSET: 禁止删除或递归清空 .git/.github".into(),
         ));
     }
-    if interpreter_mutation_pattern().is_match(command) && command_contains_external_path(command) {
+    if command_contains_disallowed_path(command, workspace, &command_base) {
         return Err(PolicyError(
-            "WORKSPACE_PATH_PROTECTED: workspace scope 禁止通过子进程写入 Workspace 外部路径"
+            "WORKSPACE_PATH_PROTECTED: workspace scope 禁止通过子进程访问 Workspace 外部路径"
                 .into(),
         ));
     }
@@ -327,7 +330,7 @@ fn workspace_local_entry_exists(
         .or_else(|| arguments.get("cwd"))
         .and_then(Value::as_str)
         .unwrap_or(".");
-    let Ok(base) = workspace.resolve_existing(workdir) else {
+    let Ok(base) = workspace.resolve_read_path(workdir) else {
         return false;
     };
     let candidate = if Path::new(executable).is_absolute() {
@@ -435,16 +438,69 @@ fn interpreter_mutation_pattern() -> &'static regex::Regex {
     })
 }
 
-fn command_contains_external_path(command: &str) -> bool {
+fn command_contains_disallowed_path(
+    command: &str,
+    workspace: Option<&Workspace>,
+    base: &Path,
+) -> bool {
     let normalized = command.replace('\\', "/");
-    normalized.contains("../")
-        || normalized.contains("..\\")
-        || regex::Regex::new(r#"(?i)(^|["'\s])/[^"]"#)
-            .expect("valid regex")
-            .is_match(&normalized)
+    let traversal = normalized.contains("../") || normalized.contains("..\\");
+    #[cfg(windows)]
+    let absolute = regex::Regex::new(r#"(?i)(^|["'\s])//[^/\s]"#)
+        .expect("valid regex")
+        .is_match(&normalized)
         || regex::Regex::new(r"(?i)\b[A-Z]:/")
             .expect("valid regex")
-            .is_match(&normalized)
+            .is_match(&normalized);
+    #[cfg(not(windows))]
+    let absolute = regex::Regex::new(r#"(?i)(^|["'\s])/[^"]"#)
+        .expect("valid regex")
+        .is_match(&normalized);
+    if !traversal && !absolute {
+        return false;
+    }
+    let Some(workspace) = workspace else {
+        return true;
+    };
+    let candidates = command_path_candidates(command);
+    candidates.is_empty()
+        || candidates
+            .iter()
+            .any(|path| !workspace.is_allowed_command_path(path, base))
+}
+
+#[cfg(windows)]
+fn command_path_candidates(command: &str) -> Vec<String> {
+    let pattern = regex::Regex::new(
+        r#"(?i)[\"'](?P<quoted>(?:[A-Z]:[\\/]|\\\\|\.\.[\\/])[^\"']*)[\"']|(?P<plain>(?:[A-Z]:[\\/]|\\\\|\.\.[\\/])[^\s\"'`;|&<>)]*)"#,
+    )
+    .expect("valid command path regex");
+    pattern
+        .captures_iter(command)
+        .filter_map(|capture| {
+            capture
+                .name("quoted")
+                .or_else(|| capture.name("plain"))
+                .map(|value| value.as_str().to_string())
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn command_path_candidates(command: &str) -> Vec<String> {
+    let pattern = regex::Regex::new(
+        r#"[\"'](?P<quoted>(?:/|\.\./)[^\"']*)[\"']|(?P<plain>(?:^|\s)(?:/|\.\./)[^\s\"'`;|&<>)]*)"#,
+    )
+    .expect("valid command path regex");
+    pattern
+        .captures_iter(command)
+        .filter_map(|capture| {
+            capture
+                .name("quoted")
+                .or_else(|| capture.name("plain"))
+                .map(|value| value.as_str().trim().to_string())
+        })
+        .collect()
 }
 
 fn command_targets_protected_repository_asset(command: &str) -> bool {

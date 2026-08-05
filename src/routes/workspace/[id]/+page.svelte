@@ -401,6 +401,7 @@
 
   async function saveMcpPolicy(draft: RuntimePolicyDraft) {
     if (!profile) return;
+    const splitPaths = (value: string) => value.split(",").map((item) => item.trim()).filter(Boolean);
     const next: WorkspaceProfile = {
       ...profile,
       runtime: {
@@ -410,6 +411,12 @@
         allowed_commands: draft.allowedCommands,
         workspace_local_entries: draft.workspaceLocalEntries,
         workspace_script_extensions: draft.workspaceScriptExtensions,
+        filesystem: {
+          mode: draft.filesystemMode,
+          allowed_paths: splitPaths(draft.allowedPaths),
+          denied_paths: splitPaths(draft.deniedPaths),
+          denied_drives: splitPaths(draft.deniedDrives),
+        },
       },
     };
     await updateWorkspace(next);
@@ -648,6 +655,10 @@
                 allowedCommands={profile.runtime.allowed_commands ?? ""}
                 workspaceLocalEntries={profile.runtime.workspace_local_entries ?? true}
                 workspaceScriptExtensions={profile.runtime.workspace_script_extensions ?? ".exe,.bat,.cmd,.ps1"}
+                filesystemMode={profile.runtime.filesystem?.mode ?? "workspace_only"}
+                allowedPaths={profile.runtime.filesystem?.allowed_paths?.join(",") ?? ""}
+                deniedPaths={profile.runtime.filesystem?.denied_paths?.join(",") ?? ""}
+                deniedDrives={profile.runtime.filesystem?.denied_drives?.join(",") ?? ""}
                 onSave={saveMcpPolicy}
               />
             </div>
