@@ -965,33 +965,34 @@ fn cloudflare_config(
 ) -> AppResult<CloudflareConfig> {
     match kind {
         TunnelServiceKind::Mcp => {
-            let tunnel_profile = settings.tunnel_profile(&profile.tunnel.frp_profile_id);
+            let cloudflare_profile =
+                settings.cloudflare_profile(&profile.tunnel.cloudflare_profile_id);
             let token = resolve_cloudflare_secret(
                 &profile.id,
                 "cloudflare_token",
-                tunnel_profile,
-                "tunnel_profile_cloudflare_tunnel_token",
+                cloudflare_profile,
+                "cloudflare_profile_tunnel_token",
             )?;
             let mode = profile.tunnel.cloudflare_mode.clone();
             let api_token = resolve_cloudflare_secret(
                 &profile.id,
                 "cloudflare_api_token",
-                tunnel_profile,
-                "tunnel_profile_cloudflare_api_token",
+                cloudflare_profile,
+                "cloudflare_profile_api_token",
             )?;
             let named_route = if mode == "named" {
                 Some(NamedTunnelRoute {
                     account_id: resolve_cloudflare_value(
                         &profile.tunnel.cloudflare_account_id,
-                        tunnel_profile.map(|profile| profile.cloudflare_account_id.as_str()),
+                        cloudflare_profile.map(|profile| profile.account_id.as_str()),
                     ),
                     tunnel_id: resolve_cloudflare_value(
                         &profile.tunnel.cloudflare_tunnel_id,
-                        tunnel_profile.map(|profile| profile.cloudflare_tunnel_id.as_str()),
+                        cloudflare_profile.map(|profile| profile.tunnel_id.as_str()),
                     ),
                     zone_id: resolve_cloudflare_value(
                         &profile.tunnel.cloudflare_zone_id,
-                        tunnel_profile.map(|profile| profile.cloudflare_zone_id.as_str()),
+                        cloudflare_profile.map(|profile| profile.zone_id.as_str()),
                     ),
                     api_token,
                     public_url: profile.tunnel.public_url.clone(),
@@ -1011,13 +1012,14 @@ fn cloudflare_config(
             })
         }
         TunnelServiceKind::Actions => {
-            let tunnel_profile = settings.tunnel_profile(&profile.actions.frp_profile_id);
+            let cloudflare_profile =
+                settings.cloudflare_profile(&profile.actions.cloudflare_profile_id);
             let token = if profile.actions.cloudflare_token.trim().is_empty() {
                 resolve_cloudflare_secret(
                     &profile.id,
                     "actions_cloudflare_token",
-                    tunnel_profile,
-                    "tunnel_profile_cloudflare_tunnel_token",
+                    cloudflare_profile,
+                    "cloudflare_profile_tunnel_token",
                 )?
             } else {
                 profile.actions.cloudflare_token.trim().to_string()
@@ -1026,22 +1028,22 @@ fn cloudflare_config(
             let api_token = resolve_cloudflare_secret(
                 &profile.id,
                 "actions_cloudflare_api_token",
-                tunnel_profile,
-                "tunnel_profile_cloudflare_api_token",
+                cloudflare_profile,
+                "cloudflare_profile_api_token",
             )?;
             let named_route = if mode == "named" {
                 Some(NamedTunnelRoute {
                     account_id: resolve_cloudflare_value(
                         &profile.actions.cloudflare_account_id,
-                        tunnel_profile.map(|profile| profile.cloudflare_account_id.as_str()),
+                        cloudflare_profile.map(|profile| profile.account_id.as_str()),
                     ),
                     tunnel_id: resolve_cloudflare_value(
                         &profile.actions.cloudflare_tunnel_id,
-                        tunnel_profile.map(|profile| profile.cloudflare_tunnel_id.as_str()),
+                        cloudflare_profile.map(|profile| profile.tunnel_id.as_str()),
                     ),
                     zone_id: resolve_cloudflare_value(
                         &profile.actions.cloudflare_zone_id,
-                        tunnel_profile.map(|profile| profile.cloudflare_zone_id.as_str()),
+                        cloudflare_profile.map(|profile| profile.zone_id.as_str()),
                     ),
                     api_token,
                     public_url: profile.actions.public_url.clone(),
@@ -1074,21 +1076,24 @@ fn resolve_cloudflare_value(workspace_value: &str, tunnel_profile_value: Option<
 fn resolve_cloudflare_secret(
     workspace_id: &str,
     workspace_secret_key: &str,
-    tunnel_profile: Option<&crate::settings::FrpProfile>,
-    tunnel_profile_secret_key: &str,
+    cloudflare_profile: Option<&crate::settings::CloudflareProfile>,
+    cloudflare_profile_secret_key: &str,
 ) -> AppResult<String> {
-    let workspace_secret = SecretStore::get(workspace_id, workspace_secret_key)?.unwrap_or_default();
+    let workspace_secret =
+        SecretStore::get(workspace_id, workspace_secret_key)?.unwrap_or_default();
     if !workspace_secret.trim().is_empty() {
         return Ok(workspace_secret);
     }
 
-    let Some(tunnel_profile) = tunnel_profile else {
+    let Some(cloudflare_profile) = cloudflare_profile else {
         return Ok(String::new());
     };
-    Ok(SecretStore::get_app(tunnel_profile_secret_key, &tunnel_profile.id)?
-        .unwrap_or_default()
-        .trim()
-        .to_string())
+    Ok(
+        SecretStore::get_app(cloudflare_profile_secret_key, &cloudflare_profile.id)?
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    )
 }
 
 pub fn log_dir_for_profile(profile_id: &str) -> PathBuf {
@@ -1130,20 +1135,19 @@ mod tests {
 
     #[test]
     fn named_tunnel_uses_global_identifiers_when_workspace_values_are_blank() {
-        let mut profile = WorkspaceProfile::new("C:/workspace/cloudflare".into(), Some("Cloudflare".into()));
+        let mut profile =
+            WorkspaceProfile::new("C:/workspace/cloudflare".into(), Some("Cloudflare".into()));
         profile.tunnel.tunnel_type = "cloudflare".into();
         profile.tunnel.cloudflare_mode = "named".into();
         profile.tunnel.public_url = "https://mcp.example.com".into();
         let settings = AppSettings {
-            default_tunnel_profile_id: "shared".into(),
-            frp_profiles: vec![crate::settings::FrpProfile {
+            default_cloudflare_profile_id: "shared".into(),
+            cloudflare_profiles: vec![crate::settings::CloudflareProfile {
                 id: "shared".into(),
                 name: "Shared Cloudflare".into(),
-                server: String::new(),
-                server_port: 7000,
-                cloudflare_account_id: "account".into(),
-                cloudflare_tunnel_id: "tunnel".into(),
-                cloudflare_zone_id: "zone".into(),
+                account_id: "account".into(),
+                tunnel_id: "tunnel".into(),
+                zone_id: "zone".into(),
             }],
             ..AppSettings::default()
         };

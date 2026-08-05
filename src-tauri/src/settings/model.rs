@@ -11,12 +11,30 @@ pub struct FrpProfile {
     pub server: String,
     #[serde(default = "default_frp_server_port", alias = "serverPort")]
     pub server_port: u16,
+    /// Read-only compatibility fields for profiles written before Cloudflare
+    /// settings were separated. `data::migrate` moves these values into a
+    /// CloudflareProfile and they are never serialized again.
     #[serde(default, alias = "cloudflareAccountId")]
+    #[serde(skip_serializing)]
     pub cloudflare_account_id: String,
     #[serde(default, alias = "cloudflareTunnelId")]
+    #[serde(skip_serializing)]
     pub cloudflare_tunnel_id: String,
     #[serde(default, alias = "cloudflareZoneId")]
+    #[serde(skip_serializing)]
     pub cloudflare_zone_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudflareProfile {
+    pub id: String,
+    pub name: String,
+    #[serde(default, alias = "accountId")]
+    pub account_id: String,
+    #[serde(default, alias = "tunnelId")]
+    pub tunnel_id: String,
+    #[serde(default, alias = "zoneId")]
+    pub zone_id: String,
 }
 
 /// Download settings for fetching frpc / cloudflared binaries.
@@ -77,6 +95,10 @@ pub struct AppSettings {
     #[serde(default, alias = "defaultTunnelProfileId")]
     pub default_tunnel_profile_id: String,
     #[serde(default)]
+    pub cloudflare_profiles: Vec<CloudflareProfile>,
+    #[serde(default, alias = "defaultCloudflareProfileId")]
+    pub default_cloudflare_profile_id: String,
+    #[serde(default)]
     pub last_workspace_id: String,
     #[serde(default)]
     pub download: DownloadConfig,
@@ -112,6 +134,8 @@ impl AppSettings {
         Self {
             frp_profiles: data.frp_profiles.clone(),
             default_tunnel_profile_id: data.default_tunnel_profile_id.clone(),
+            cloudflare_profiles: data.cloudflare_profiles.clone(),
+            default_cloudflare_profile_id: data.default_cloudflare_profile_id.clone(),
             last_workspace_id: data.last_workspace_id.clone(),
             download: data.download.clone(),
             proxy: data.proxy.clone(),
@@ -124,6 +148,8 @@ impl AppSettings {
     pub fn apply_to(&self, data: &mut AppData) {
         data.frp_profiles = self.frp_profiles.clone();
         data.default_tunnel_profile_id = self.default_tunnel_profile_id.clone();
+        data.cloudflare_profiles = self.cloudflare_profiles.clone();
+        data.default_cloudflare_profile_id = self.default_cloudflare_profile_id.clone();
         data.last_workspace_id = self.last_workspace_id.clone();
         data.download = self.download.clone();
         data.proxy = self.proxy.clone();
@@ -133,8 +159,7 @@ impl AppSettings {
     }
 
     pub fn load_or_default() -> Self {
-        crate::data::DataStore::read_file(|data| Ok(Self::from_data(data)))
-            .unwrap_or_default()
+        crate::data::DataStore::read_file(|data| Ok(Self::from_data(data))).unwrap_or_default()
     }
 
     pub fn find_frp_profile(&self, id: &str) -> Option<&FrpProfile> {
@@ -152,6 +177,26 @@ impl AppSettings {
             id
         };
         self.find_frp_profile(id)
+    }
+
+    pub fn find_cloudflare_profile(&self, id: &str) -> Option<&CloudflareProfile> {
+        if id.trim().is_empty() {
+            return None;
+        }
+        self.cloudflare_profiles
+            .iter()
+            .find(|profile| profile.id == id)
+    }
+
+    /// Use the workspace-selected Cloudflare profile when present; otherwise
+    /// use the app default Cloudflare profile.
+    pub fn cloudflare_profile(&self, id: &str) -> Option<&CloudflareProfile> {
+        let id = if id.trim().is_empty() {
+            self.default_cloudflare_profile_id.as_str()
+        } else {
+            id
+        };
+        self.find_cloudflare_profile(id)
     }
 }
 
@@ -172,7 +217,7 @@ impl FrpProfile {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppSettings, FrpProfile};
+    use super::{AppSettings, CloudflareProfile, FrpProfile};
 
     #[test]
     fn accepts_frontend_camel_case_server_port() {
@@ -201,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_cloudflare_fields_from_the_tunnel_configuration_form() {
+    fn accepts_legacy_cloudflare_fields_for_migration_without_reserializing_them() {
         let profile: FrpProfile = serde_json::from_value(serde_json::json!({
             "id": "p1",
             "name": "Cloudflare",
@@ -215,6 +260,27 @@ mod tests {
         assert_eq!(profile.cloudflare_account_id, "account");
         assert_eq!(profile.cloudflare_tunnel_id, "tunnel");
         assert_eq!(profile.cloudflare_zone_id, "zone");
+
+        let serialized = serde_json::to_value(profile).expect("profile should serialize");
+        assert!(serialized.get("cloudflare_account_id").is_none());
+        assert!(serialized.get("cloudflare_tunnel_id").is_none());
+        assert!(serialized.get("cloudflare_zone_id").is_none());
+    }
+
+    #[test]
+    fn cloudflare_profile_accepts_frontend_camel_case_fields() {
+        let profile: CloudflareProfile = serde_json::from_value(serde_json::json!({
+            "id": "cloudflare",
+            "name": "Cloudflare",
+            "accountId": "account",
+            "tunnelId": "tunnel",
+            "zoneId": "zone"
+        }))
+        .expect("Cloudflare profile should deserialize");
+
+        assert_eq!(profile.account_id, "account");
+        assert_eq!(profile.tunnel_id, "tunnel");
+        assert_eq!(profile.zone_id, "zone");
     }
 
     #[test]
@@ -234,7 +300,9 @@ mod tests {
         };
 
         assert_eq!(
-            settings.tunnel_profile("").map(|profile| profile.name.as_str()),
+            settings
+                .tunnel_profile("")
+                .map(|profile| profile.name.as_str()),
             Some("Default tunnel")
         );
     }

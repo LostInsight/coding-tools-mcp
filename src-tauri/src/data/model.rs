@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::settings::{DownloadConfig, FrpProfile, ProxyConfig};
+use crate::settings::{CloudflareProfile, DownloadConfig, FrpProfile, ProxyConfig};
 use crate::workspace::WorkspaceProfile;
 
 /// Unified on-disk payload stored in `data/profiles.json`.
@@ -12,6 +12,10 @@ pub struct AppData {
     pub frp_profiles: Vec<FrpProfile>,
     #[serde(default)]
     pub default_tunnel_profile_id: String,
+    #[serde(default)]
+    pub cloudflare_profiles: Vec<CloudflareProfile>,
+    #[serde(default)]
+    pub default_cloudflare_profile_id: String,
     #[serde(default)]
     pub last_workspace_id: String,
     #[serde(default)]

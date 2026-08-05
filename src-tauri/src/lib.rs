@@ -21,19 +21,19 @@ mod workspace;
 
 use app_state::AppState;
 use commands::{
-    check_app_update, clear_paseo_monitor_snapshots, create_workspace, delete_frp_profile,
-    delete_workspace,
-    get_actions_runtime_status, get_app_settings, get_download_config, get_frp_snippet,
-    get_last_workspace_id, get_paseo_integration_settings, get_proxy, get_runtime_status,
-    get_shared_secret, get_tunnel_status, get_webview_memory_sample, get_workspace_secret,
-    install_software,
-    list_frp_profiles, list_paseo_filter_options, list_software, list_workspaces, open_url,
-    open_workspace_directory, read_workspace_logs, recreate_ui_webview, regenerate_shared_secret,
-    regenerate_workspace_secret, restart_actions_runtime, restart_runtime, restart_tunnel,
-    run_health_checks, save_frp_profile, save_paseo_integration_settings, set_download_config,
-    set_last_workspace, set_proxy, set_shared_secret, set_workspace_secret, start_actions_runtime,
-    start_runtime, start_tunnel, stop_actions_runtime, stop_runtime, stop_tunnel,
-    test_paseo_connection, test_tunnel, uninstall_software, update_workspace,
+    check_app_update, clear_paseo_monitor_snapshots, create_workspace, delete_cloudflare_profile,
+    delete_frp_profile, delete_workspace, get_actions_runtime_status, get_app_settings,
+    get_download_config, get_frp_snippet, get_last_workspace_id, get_paseo_integration_settings,
+    get_proxy, get_runtime_status, get_shared_secret, get_tunnel_status, get_workspace_secret,
+    install_software, list_cloudflare_profiles, list_frp_profiles, list_paseo_filter_options,
+    list_software, list_workspaces, open_url, open_workspace_directory, read_workspace_logs,
+    regenerate_shared_secret, regenerate_workspace_secret, restart_actions_runtime,
+    restart_runtime, restart_tunnel, run_health_checks, save_cloudflare_profile, save_frp_profile,
+    save_paseo_integration_settings, set_download_config, set_last_workspace, set_proxy,
+    set_shared_secret, set_workspace_secret, start_actions_runtime, start_runtime, start_tunnel,
+    stop_actions_runtime, stop_runtime, stop_tunnel, test_paseo_connection, test_tunnel,
+    uninstall_software, update_workspace,
+    get_webview_memory_sample, recreate_ui_webview,
 };
 use tauri::Manager;
 
@@ -144,6 +144,9 @@ pub fn run() {
             list_frp_profiles,
             save_frp_profile,
             delete_frp_profile,
+            list_cloudflare_profiles,
+            save_cloudflare_profile,
+            delete_cloudflare_profile,
             get_app_settings,
             restart_tunnel,
             test_tunnel,

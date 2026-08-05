@@ -84,6 +84,8 @@ fn restore_tunnel_config(
                 current.actions.frp_server = restored.actions.frp_server.clone();
                 current.actions.frp_subdomain = restored.actions.frp_subdomain.clone();
                 current.actions.frp_profile_id = restored.actions.frp_profile_id.clone();
+                current.actions.cloudflare_profile_id =
+                    restored.actions.cloudflare_profile_id.clone();
                 current.actions.frp_server_port = restored.actions.frp_server_port;
                 current.actions.cloudflare_mode = restored.actions.cloudflare_mode.clone();
                 current.actions.cloudflare_token = restored.actions.cloudflare_token.clone();
@@ -103,6 +105,7 @@ fn mcp_tunnel_matches(
         && left.tunnel.frp_server == right.tunnel.frp_server
         && left.tunnel.frp_subdomain == right.tunnel.frp_subdomain
         && left.tunnel.frp_profile_id == right.tunnel.frp_profile_id
+        && left.tunnel.cloudflare_profile_id == right.tunnel.cloudflare_profile_id
         && left.tunnel.frp_server_port == right.tunnel.frp_server_port
         && left.tunnel.cloudflare_mode == right.tunnel.cloudflare_mode
         && left.tunnel.use_proxy == right.tunnel.use_proxy
@@ -117,6 +120,7 @@ fn actions_tunnel_matches(
         && left.actions.frp_server == right.actions.frp_server
         && left.actions.frp_subdomain == right.actions.frp_subdomain
         && left.actions.frp_profile_id == right.actions.frp_profile_id
+        && left.actions.cloudflare_profile_id == right.actions.cloudflare_profile_id
         && left.actions.frp_server_port == right.actions.frp_server_port
         && left.actions.cloudflare_mode == right.actions.cloudflare_mode
         && left.actions.cloudflare_token == right.actions.cloudflare_token

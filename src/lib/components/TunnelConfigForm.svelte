@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listFrpProfiles, type FrpProfileDto } from "$lib/api/settings";
+  import {
+    listCloudflareProfiles,
+    listFrpProfiles,
+    type CloudflareProfileDto,
+    type FrpProfileDto,
+  } from "$lib/api/settings";
   import { testTunnel as invokeTunnelTest } from "$lib/api/tunnel";
   import NamedTunnelControls from "$lib/components/NamedTunnelControls.svelte";
   import SecretTokenField from "$lib/components/SecretTokenField.svelte";
@@ -12,6 +17,7 @@
     frp_server: string;
     frp_subdomain: string;
     frp_profile_id: string;
+    cloudflare_profile_id: string;
     frp_server_port: number;
     cloudflare_mode: string;
     cloudflare_account_id: string;
@@ -41,6 +47,7 @@
     frp_server: "",
     frp_subdomain: "",
     frp_profile_id: "",
+    cloudflare_profile_id: "",
     frp_server_port: 7000,
     cloudflare_mode: "quick",
     cloudflare_account_id: "",
@@ -56,6 +63,7 @@
   let tunnelTokenPending = $state(false);
   let apiTokenPending = $state(false);
   let frpProfiles = $state<FrpProfileDto[]>([]);
+  let cloudflareProfiles = $state<CloudflareProfileDto[]>([]);
   let legacyFrpOpen = $state(false);
 
   const tunnelSecretKey = $derived(
@@ -74,15 +82,25 @@
       : ("actions_cloudflare_api_token" as const),
   );
 
-  const selectedProfile = $derived(
+  const selectedFrpProfile = $derived(
     frpProfiles.find((profile) => profile.id === draft.frp_profile_id) ?? null,
   );
-
-  const defaultProfile = $derived(frpProfiles.find((profile) => profile.isDefault) ?? null);
-  const resolvedProfile = $derived(
-    selectedProfile ?? (draft.frp_profile_id ? null : defaultProfile),
+  const defaultFrpProfile = $derived(frpProfiles.find((profile) => profile.isDefault) ?? null);
+  const resolvedFrpProfile = $derived(
+    selectedFrpProfile ?? (draft.frp_profile_id ? null : defaultFrpProfile),
   );
-  const useGlobalProfile = $derived(Boolean(resolvedProfile));
+  const useGlobalFrpProfile = $derived(Boolean(resolvedFrpProfile));
+
+  const selectedCloudflareProfile = $derived(
+    cloudflareProfiles.find((profile) => profile.id === draft.cloudflare_profile_id) ?? null,
+  );
+  const defaultCloudflareProfile = $derived(
+    cloudflareProfiles.find((profile) => profile.isDefault) ?? null,
+  );
+  const resolvedCloudflareProfile = $derived(
+    selectedCloudflareProfile ?? (draft.cloudflare_profile_id ? null : defaultCloudflareProfile),
+  );
+  const useGlobalCloudflareProfile = $derived(Boolean(resolvedCloudflareProfile));
 
   const dirty = $derived(
     draft.type !== config.type ||
@@ -90,6 +108,7 @@
       draft.frp_server !== config.frp_server ||
       draft.frp_subdomain !== config.frp_subdomain ||
       draft.frp_profile_id !== config.frp_profile_id ||
+      draft.cloudflare_profile_id !== config.cloudflare_profile_id ||
       draft.frp_server_port !== config.frp_server_port ||
       draft.cloudflare_mode !== config.cloudflare_mode ||
       draft.cloudflare_account_id !== config.cloudflare_account_id ||
@@ -111,6 +130,7 @@
     draft = {
       ...config,
       frp_profile_id: config.frp_profile_id ?? "",
+      cloudflare_profile_id: config.cloudflare_profile_id ?? "",
       cloudflare_account_id: config.cloudflare_account_id ?? "",
       cloudflare_tunnel_id: config.cloudflare_tunnel_id ?? "",
       cloudflare_zone_id: config.cloudflare_zone_id ?? "",
@@ -120,7 +140,12 @@
   });
 
   onMount(async () => {
-    frpProfiles = await listFrpProfiles();
+    const [nextFrpProfiles, nextCloudflareProfiles] = await Promise.all([
+      listFrpProfiles(),
+      listCloudflareProfiles(),
+    ]);
+    frpProfiles = nextFrpProfiles;
+    cloudflareProfiles = nextCloudflareProfiles;
   });
 
   async function saveDraft(options?: SaveTunnelOptions) {
@@ -245,14 +270,14 @@
       {/if}
     </label>
 
-    {#if useGlobalProfile && resolvedProfile}
+    {#if useGlobalFrpProfile && resolvedFrpProfile}
       <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-xs">
         <p class="text-[var(--color-text-secondary)]">
-          {selectedProfile ? "已选配置" : "默认配置"}：{resolvedProfile.name}
+          {selectedFrpProfile ? "已选配置" : "默认配置"}：{resolvedFrpProfile.name}
         </p>
         <p class="mt-1 text-[var(--color-text-muted)]">
-          FRP 服务器：{resolvedProfile.server ? `${resolvedProfile.server}:${resolvedProfile.serverPort}` : "未配置"}
-          · Token：{resolvedProfile.hasToken ? "已配置" : "未配置"}
+          FRP 服务器：{resolvedFrpProfile.server ? `${resolvedFrpProfile.server}:${resolvedFrpProfile.serverPort}` : "未配置"}
+          · Token：{resolvedFrpProfile.hasToken ? "已配置" : "未配置"}
         </p>
       </div>
     {/if}
@@ -277,7 +302,7 @@
         legacyFrpOpen = !legacyFrpOpen;
       }}
     >
-      {legacyFrpOpen ? "收起" : useGlobalProfile ? "添加工作区覆盖" : "展开"}手动 FRP 配置
+      {legacyFrpOpen ? "收起" : useGlobalFrpProfile ? "添加工作区覆盖" : "展开"}手动 FRP 配置
     </button>
 
     {#if legacyFrpOpen}
@@ -308,7 +333,7 @@
           bind:hasPending={tunnelTokenPending}
           {workspaceId}
           secretKey={tunnelSecretKey}
-          label={useGlobalProfile ? "FRP Token（工作区覆盖）" : "FRP Token（可选）"}
+          label={useGlobalFrpProfile ? "FRP Token（工作区覆盖）" : "FRP Token（可选）"}
         />
       {/if}
     {/if}
@@ -319,33 +344,33 @@
       <span class="text-xs text-[var(--color-text-muted)]">共享隧道配置</span>
       <select
         class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 text-sm"
-        bind:value={draft.frp_profile_id}
+        bind:value={draft.cloudflare_profile_id}
       >
         <option value="">不指定（继承默认配置）</option>
-        {#each frpProfiles as profile (profile.id)}
+        {#each cloudflareProfiles as profile (profile.id)}
           <option value={profile.id}>
             {profile.name}{profile.isDefault ? " · 默认" : ""}
           </option>
         {/each}
       </select>
-      {#if frpProfiles.length === 0}
+      {#if cloudflareProfiles.length === 0}
         <p class="text-[11px] text-[var(--color-text-muted)]">
           请先在侧边栏「隧道配置」中添加共享配置。
         </p>
       {/if}
     </label>
 
-    {#if useGlobalProfile && resolvedProfile}
+    {#if useGlobalCloudflareProfile && resolvedCloudflareProfile}
       <div class="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-xs">
         <p class="text-[var(--color-text-secondary)]">
-          {selectedProfile ? "已选配置" : "默认配置"}：{resolvedProfile.name}
+          {selectedCloudflareProfile ? "已选配置" : "默认配置"}：{resolvedCloudflareProfile.name}
         </p>
         <p class="mt-1 text-[var(--color-text-muted)]">
-          Cloudflare 标识：{resolvedProfile.cloudflareAccountId && resolvedProfile.cloudflareTunnelId && resolvedProfile.cloudflareZoneId
+          Cloudflare 标识：{resolvedCloudflareProfile.accountId && resolvedCloudflareProfile.tunnelId && resolvedCloudflareProfile.zoneId
             ? "已配置"
             : "未配置"}
-          · Tunnel Token：{resolvedProfile.hasCloudflareTunnelToken ? "已配置" : "未配置"}
-          · API Token：{resolvedProfile.hasCloudflareApiToken ? "已配置" : "未配置"}
+          · Tunnel Token：{resolvedCloudflareProfile.hasTunnelToken ? "已配置" : "未配置"}
+          · API Token：{resolvedCloudflareProfile.hasApiToken ? "已配置" : "未配置"}
         </p>
       </div>
     {/if}
@@ -367,14 +392,14 @@
         bind:hasPending={tunnelTokenPending}
         {workspaceId}
         secretKey={tunnelSecretKey}
-        label={useGlobalProfile ? "Cloudflare Tunnel Token（工作区覆盖）" : "Cloudflare Tunnel Token"}
+        label={useGlobalCloudflareProfile ? "Cloudflare Tunnel Token（工作区覆盖）" : "Cloudflare Tunnel Token"}
       />
       <SecretTokenField
         bind:this={apiTokenField}
         bind:hasPending={apiTokenPending}
         {workspaceId}
         secretKey={apiSecretKey}
-        label={useGlobalProfile ? "Cloudflare API Token（工作区覆盖）" : "Cloudflare API Token"}
+        label={useGlobalCloudflareProfile ? "Cloudflare API Token（工作区覆盖）" : "Cloudflare API Token"}
       />
 
       <div class="grid gap-3 sm:grid-cols-2">

@@ -9,6 +9,7 @@ export interface TunnelConfig {
   frp_server: string;
   frp_subdomain: string;
   frp_profile_id?: string;
+  cloudflare_profile_id?: string;
   frp_server_port?: number;
   cloudflare_mode: string;
   cloudflare_account_id?: string;
@@ -48,6 +49,7 @@ export interface ActionsConfig {
   frp_server: string;
   frp_subdomain: string;
   frp_profile_id?: string;
+  cloudflare_profile_id?: string;
   frp_server_port?: number;
   cloudflare_mode: string;
   cloudflare_token?: string;

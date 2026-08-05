@@ -1,4 +1,5 @@
 mod app_info;
+mod cloudflare_profiles;
 mod frp_profiles;
 mod health;
 mod logs;
@@ -12,6 +13,9 @@ mod workspace;
 
 pub use app_info::{check_app_update, open_url};
 pub use ui_memory::{get_webview_memory_sample, recreate_ui_webview};
+pub use cloudflare_profiles::{
+    delete_cloudflare_profile, list_cloudflare_profiles, save_cloudflare_profile,
+};
 pub use frp_profiles::{
     delete_frp_profile, get_app_settings, get_last_workspace_id, get_proxy, list_frp_profiles,
     save_frp_profile, set_last_workspace, set_proxy,
@@ -27,12 +31,11 @@ pub use runtime::{
     start_actions_runtime, start_runtime, stop_actions_runtime, stop_runtime,
 };
 pub use secrets::{
-    get_shared_secret, get_workspace_secret, regenerate_shared_secret,
-    regenerate_workspace_secret, set_shared_secret, set_workspace_secret,
+    get_shared_secret, get_workspace_secret, regenerate_shared_secret, regenerate_workspace_secret,
+    set_shared_secret, set_workspace_secret,
 };
 pub use software::{
-    get_download_config, install_software, list_software, set_download_config,
-    uninstall_software,
+    get_download_config, install_software, list_software, set_download_config, uninstall_software,
 };
 pub use tunnel::{
     get_frp_snippet, get_tunnel_status, restart_tunnel, start_tunnel, stop_tunnel, test_tunnel,

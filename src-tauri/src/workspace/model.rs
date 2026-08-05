@@ -29,6 +29,8 @@ pub struct TunnelConfig {
     pub frp_subdomain: String,
     #[serde(default)]
     pub frp_profile_id: String,
+    #[serde(default)]
+    pub cloudflare_profile_id: String,
     #[serde(default = "default_frp_server_port")]
     pub frp_server_port: u16,
     #[serde(default = "default_cloudflare_mode")]
@@ -101,6 +103,8 @@ pub struct ActionsConfig {
     pub frp_subdomain: String,
     #[serde(default)]
     pub frp_profile_id: String,
+    #[serde(default)]
+    pub cloudflare_profile_id: String,
     #[serde(default = "default_frp_server_port")]
     pub frp_server_port: u16,
     #[serde(default = "default_cloudflare_mode")]
@@ -238,6 +242,7 @@ impl Default for TunnelConfig {
             frp_server: String::new(),
             frp_subdomain: String::new(),
             frp_profile_id: String::new(),
+            cloudflare_profile_id: String::new(),
             frp_server_port: default_frp_server_port(),
             cloudflare_mode: default_cloudflare_mode(),
             cloudflare_account_id: String::new(),
@@ -282,6 +287,7 @@ impl Default for ActionsConfig {
             frp_server: String::new(),
             frp_subdomain: String::new(),
             frp_profile_id: String::new(),
+            cloudflare_profile_id: String::new(),
             frp_server_port: default_frp_server_port(),
             cloudflare_mode: default_cloudflare_mode(),
             cloudflare_token: String::new(),

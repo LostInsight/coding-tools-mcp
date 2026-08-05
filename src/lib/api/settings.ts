@@ -5,12 +5,7 @@ export interface FrpProfileDto {
   name: string;
   server: string;
   serverPort: number;
-  cloudflareAccountId: string;
-  cloudflareTunnelId: string;
-  cloudflareZoneId: string;
   hasToken: boolean;
-  hasCloudflareTunnelToken: boolean;
-  hasCloudflareApiToken: boolean;
   isDefault: boolean;
 }
 
@@ -19,9 +14,6 @@ export interface FrpProfileInput {
   name: string;
   server: string;
   serverPort: number;
-  cloudflareAccountId: string;
-  cloudflareTunnelId: string;
-  cloudflareZoneId: string;
 }
 
 export async function listFrpProfiles(): Promise<FrpProfileDto[]> {
@@ -31,15 +23,11 @@ export async function listFrpProfiles(): Promise<FrpProfileDto[]> {
 export async function saveFrpProfile(
   profile: FrpProfileInput,
   token?: string,
-  cloudflareTunnelToken?: string,
-  cloudflareApiToken?: string,
   makeDefault?: boolean,
 ): Promise<FrpProfileDto> {
   return invoke<FrpProfileDto>("save_frp_profile", {
     profile,
     token,
-    cloudflareTunnelToken,
-    cloudflareApiToken,
     makeDefault,
   });
 }
@@ -54,6 +42,47 @@ export async function setLastWorkspace(id: string): Promise<void> {
 
 export async function deleteFrpProfile(id: string): Promise<void> {
   return invoke("delete_frp_profile", { id });
+}
+
+export interface CloudflareProfileDto {
+  id: string;
+  name: string;
+  accountId: string;
+  tunnelId: string;
+  zoneId: string;
+  hasTunnelToken: boolean;
+  hasApiToken: boolean;
+  isDefault: boolean;
+}
+
+export interface CloudflareProfileInput {
+  id: string;
+  name: string;
+  accountId: string;
+  tunnelId: string;
+  zoneId: string;
+}
+
+export async function listCloudflareProfiles(): Promise<CloudflareProfileDto[]> {
+  return invoke<CloudflareProfileDto[]>("list_cloudflare_profiles");
+}
+
+export async function saveCloudflareProfile(
+  profile: CloudflareProfileInput,
+  tunnelToken?: string,
+  apiToken?: string,
+  makeDefault?: boolean,
+): Promise<CloudflareProfileDto> {
+  return invoke<CloudflareProfileDto>("save_cloudflare_profile", {
+    profile,
+    tunnelToken,
+    apiToken,
+    makeDefault,
+  });
+}
+
+export async function deleteCloudflareProfile(id: string): Promise<void> {
+  return invoke("delete_cloudflare_profile", { id });
 }
 
 export interface ProxyConfigDto {
