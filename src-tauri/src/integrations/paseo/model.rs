@@ -20,7 +20,12 @@ pub const PASEO_READ_ONLY_TOOLS: &[&str] = &[
     "paseo_monitor_snapshot",
 ];
 pub const PASEO_ASSIST_TOOLS: &[&str] = &["paseo_send_agent_prompt"];
-pub const PASEO_CONTROL_TOOLS: &[&str] = &["paseo_stop_agent"];
+pub const PASEO_CONTROL_TOOLS: &[&str] = &[
+    "paseo_stop_agent",
+    "paseo_allow_permission",
+    "paseo_deny_permission",
+    "paseo_create_agent",
+];
 pub const PASEO_ALL_TOOLS: &[&str] = &[
     "paseo_health",
     "paseo_list_agents",
@@ -30,6 +35,9 @@ pub const PASEO_ALL_TOOLS: &[&str] = &[
     "paseo_monitor_snapshot",
     "paseo_send_agent_prompt",
     "paseo_stop_agent",
+    "paseo_allow_permission",
+    "paseo_deny_permission",
+    "paseo_create_agent",
 ];
 
 #[derive(Debug, Clone)]
@@ -175,6 +183,7 @@ pub struct ActivityEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionSummary {
+    pub request_id: Option<String>,
     pub agent_id: Option<String>,
     pub permission_type: String,
     pub requested_at: Option<String>,
@@ -300,6 +309,8 @@ pub struct PaseoRuntimeState {
     pub last_list_at: Mutex<Option<Instant>>,
     pub sends: Mutex<HashMap<String, Vec<Instant>>>,
     pub stops: Mutex<HashSet<String>>,
+    pub permission_operations: Mutex<HashSet<String>>,
+    pub creates: Mutex<Vec<Instant>>,
     pub diagnoses: Mutex<HashSet<String>>,
     pub monitor_active: Mutex<bool>,
 }

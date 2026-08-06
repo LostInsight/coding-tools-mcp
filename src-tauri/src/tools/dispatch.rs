@@ -521,4 +521,36 @@ mod paseo_tests {
         );
         assert_eq!(result["error"]["code"], "PASEO_CONFIRMATION_REQUIRED");
     }
+
+    #[test]
+    fn control_permission_and_create_require_confirmation_before_binary_discovery() {
+        let (_workspace, _harness, mut context) = context();
+        context.paseo.config.enabled = true;
+        context.paseo.config.access_mode = PaseoAccessMode::Control;
+
+        let allow = call_tool(
+            &context,
+            "paseo_allow_permission",
+            &json!({"agent_id": "agent-1", "request_id": "req-1", "confirm": false}),
+        );
+        assert_eq!(allow["error"]["code"], "PASEO_CONFIRMATION_REQUIRED");
+
+        let deny = call_tool(
+            &context,
+            "paseo_deny_permission",
+            &json!({"agent_id": "agent-1", "request_id": "req-1", "confirm": false}),
+        );
+        assert_eq!(deny["error"]["code"], "PASEO_CONFIRMATION_REQUIRED");
+
+        let create = call_tool(
+            &context,
+            "paseo_create_agent",
+            &json!({
+                "prompt": "smoke test",
+                "provider": "codex/gpt-5.6-luna",
+                "confirm": false
+            }),
+        );
+        assert_eq!(create["error"]["code"], "PASEO_CONFIRMATION_REQUIRED");
+    }
 }

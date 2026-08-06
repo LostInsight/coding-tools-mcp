@@ -244,6 +244,74 @@ impl<R: PaseoCommandRunner> PaseoClient for PaseoCliClient<R> {
         let output = self.run(args, "stop", None)?;
         parse_json_output(&output, "stop", "Paseo stop response")
     }
+
+    fn allow_permission(&self, agent_id: &str, request_id: &str) -> Result<Value, PaseoError> {
+        let _ = self.checked_version()?;
+        let mut args = vec![
+            "--no-color".into(),
+            "permit".into(),
+            "allow".into(),
+            agent_id.into(),
+            request_id.into(),
+            "--json".into(),
+        ];
+        args.extend(self.host_args());
+        let output = self.run(args, "allow_permission", None)?;
+        parse_json_output(
+            &output,
+            "allow_permission",
+            "Paseo permission allow response",
+        )
+    }
+
+    fn deny_permission(
+        &self,
+        agent_id: &str,
+        request_id: &str,
+        message: Option<&str>,
+    ) -> Result<Value, PaseoError> {
+        let _ = self.checked_version()?;
+        let mut args = vec![
+            "--no-color".into(),
+            "permit".into(),
+            "deny".into(),
+            agent_id.into(),
+            request_id.into(),
+        ];
+        if let Some(message) = message.filter(|value| !value.is_empty()) {
+            args.extend(["--message".into(), message.into()]);
+        }
+        args.push("--json".into());
+        args.extend(self.host_args());
+        let output = self.run(args, "deny_permission", None)?;
+        parse_json_output(&output, "deny_permission", "Paseo permission deny response")
+    }
+
+    fn create_agent(
+        &self,
+        prompt: &str,
+        title: Option<&str>,
+        provider: &str,
+        cwd: &str,
+    ) -> Result<Value, PaseoError> {
+        let _ = self.checked_version()?;
+        let mut args = vec![
+            "--no-color".into(),
+            "run".into(),
+            "--background".into(),
+            "--json".into(),
+        ];
+        if let Some(title) = title {
+            args.extend(["--title".into(), title.into()]);
+        }
+        args.extend(["--provider".into(), provider.into()]);
+        args.extend(["--cwd".into(), cwd.into()]);
+        args.extend(self.host_args());
+        args.push("--".into());
+        args.push(prompt.into());
+        let output = self.run(args, "create_agent", None)?;
+        parse_json_output(&output, "create_agent", "Paseo create agent response")
+    }
 }
 
 fn ensure_complete_stdout(
@@ -404,6 +472,76 @@ mod tests {
             Some("--")
         );
         assert!(!calls[1].args.iter().any(|arg| arg == "cmd" || arg == "sh"));
+    }
+
+    #[test]
+    fn control_commands_use_exact_bounded_cli_shapes() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp
+            .path()
+            .join(if cfg!(windows) { "paseo.exe" } else { "paseo" });
+        std::fs::write(&binary, "fixture").unwrap();
+        let config = PaseoIntegrationConfig {
+            enabled: true,
+            access_mode: PaseoAccessMode::Control,
+            binary_path: binary.display().to_string(),
+            ..PaseoIntegrationConfig::default()
+        };
+        let context =
+            PaseoRuntimeContext::new("ws-control".into(), temp.path().to_path_buf(), config, None);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runner = FakeRunner {
+            calls: calls.clone(),
+            outputs: Arc::new(Mutex::new(vec![
+                output("0.2.5"),
+                output(r#"{"ok":true}"#),
+                output(r#"{"ok":true}"#),
+                output(r#"{"id":"agent-new"}"#),
+            ])),
+        };
+        let client = PaseoCliClient::new(context, runner);
+
+        client.allow_permission("agent-1", "req-1").unwrap();
+        client
+            .deny_permission("agent-1", "req-2", Some("not approved"))
+            .unwrap();
+        client
+            .create_agent(
+                "run tests && report",
+                Some("smoke"),
+                "codex/gpt-5.6-luna",
+                temp.path().to_str().unwrap(),
+            )
+            .unwrap();
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 4);
+        let allow = &calls[1].args;
+        assert!(allow
+            .windows(3)
+            .any(|args| args == ["allow", "agent-1", "req-1"]));
+        assert!(!allow.iter().any(|arg| arg == "--all"));
+
+        let deny = &calls[2].args;
+        assert!(deny
+            .windows(3)
+            .any(|args| args == ["deny", "agent-1", "req-2"]));
+        assert!(deny
+            .windows(2)
+            .any(|args| args == ["--message", "not approved"]));
+        assert!(!deny
+            .iter()
+            .any(|arg| arg == "--all" || arg == "--interrupt"));
+
+        let create = &calls[3].args;
+        assert!(create.iter().any(|arg| arg == "--background"));
+        assert!(create.iter().any(|arg| arg == "--json"));
+        assert_eq!(
+            create.last().map(String::as_str),
+            Some("run tests && report")
+        );
+        assert_eq!(create.get(create.len() - 2).map(String::as_str), Some("--"));
+        assert!(!create.iter().any(|arg| arg == "cmd" || arg == "sh"));
     }
 
     #[test]

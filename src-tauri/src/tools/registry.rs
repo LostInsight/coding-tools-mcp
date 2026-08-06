@@ -988,6 +988,9 @@ mod tests {
         );
         assert!(has_tool(&assist, "paseo_send_agent_prompt"));
         assert!(!has_tool(&assist, "paseo_stop_agent"));
+        assert!(!has_tool(&assist, "paseo_allow_permission"));
+        assert!(!has_tool(&assist, "paseo_deny_permission"));
+        assert!(!has_tool(&assist, "paseo_create_agent"));
 
         config.access_mode = PaseoAccessMode::Control;
         let control = tool_names(list_tools_for_context("core", &config));
@@ -996,9 +999,12 @@ mod tests {
                 .iter()
                 .filter(|name| name.starts_with("paseo_"))
                 .count(),
-            8
+            11
         );
         assert!(has_tool(&control, "paseo_stop_agent"));
+        assert!(has_tool(&control, "paseo_allow_permission"));
+        assert!(has_tool(&control, "paseo_deny_permission"));
+        assert!(has_tool(&control, "paseo_create_agent"));
     }
 
     fn tool_names(tools: Vec<serde_json::Value>) -> Vec<String> {

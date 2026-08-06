@@ -18,4 +18,18 @@ pub trait PaseoClient {
     fn list_pending_permissions(&self) -> Result<ParsedPaseo<Vec<PermissionSummary>>, PaseoError>;
     fn send_prompt(&self, agent_id: &str, prompt: &str) -> Result<Value, PaseoError>;
     fn stop_agent(&self, agent_id: &str) -> Result<Value, PaseoError>;
+    fn allow_permission(&self, agent_id: &str, request_id: &str) -> Result<Value, PaseoError>;
+    fn deny_permission(
+        &self,
+        agent_id: &str,
+        request_id: &str,
+        message: Option<&str>,
+    ) -> Result<Value, PaseoError>;
+    fn create_agent(
+        &self,
+        prompt: &str,
+        title: Option<&str>,
+        provider: &str,
+        cwd: &str,
+    ) -> Result<Value, PaseoError>;
 }

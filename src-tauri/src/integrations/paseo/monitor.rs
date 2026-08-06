@@ -495,6 +495,7 @@ mod tests {
             missing_fields: Vec::new(),
         };
         let permission = PermissionSummary {
+            request_id: Some("req-1".into()),
             agent_id: None,
             permission_type: "unknown".into(),
             requested_at: None,

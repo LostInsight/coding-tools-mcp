@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -9,6 +10,116 @@ use super::model::{
 
 pub fn is_paseo_tool(name: &str) -> bool {
     PASEO_ALL_TOOLS.contains(&name)
+}
+
+fn request_id_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+            .expect("permission request id regex")
+    })
+}
+
+fn provider_pattern() -> &'static regex::Regex {
+    static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    PATTERN.get_or_init(|| {
+        regex::Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$").expect("provider regex")
+    })
+}
+
+pub fn begin_permission_operation(
+    ctx: &PaseoRuntimeContext,
+    action: &str,
+    agent_id: &str,
+    request_id: &str,
+) -> Result<String, PaseoError> {
+    let key = format!("{action}:{agent_id}:{request_id}");
+    let mut operations = ctx
+        .state
+        .permission_operations
+        .lock()
+        .expect("paseo permission operation lock");
+    if !operations.insert(key.clone()) {
+        return Err(rate_limited("permission_operation", 1));
+    }
+    Ok(key)
+}
+
+pub fn finish_permission_operation(ctx: &PaseoRuntimeContext, key: &str) {
+    ctx.state
+        .permission_operations
+        .lock()
+        .expect("paseo permission operation lock")
+        .remove(key);
+}
+
+pub fn begin_create(ctx: &PaseoRuntimeContext) -> Result<(), PaseoError> {
+    let mut creates = ctx.state.creates.lock().expect("paseo create lock");
+    let now = Instant::now();
+    creates.retain(|time| now.duration_since(*time) < Duration::from_secs(60));
+    if creates.len() >= 3 {
+        return Err(rate_limited("create_agent", 60));
+    }
+    creates.push(now);
+    Ok(())
+}
+
+pub fn validate_request_id(value: &str) -> Result<(), PaseoError> {
+    if value.is_empty() || value.len() > 128 || !request_id_pattern().is_match(value) {
+        return Err(PaseoError::argument("request_id has an invalid format"));
+    }
+    Ok(())
+}
+
+pub fn validate_provider(value: Option<&str>) -> Result<(), PaseoError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.is_empty() || value.len() > 120 || !provider_pattern().is_match(value) {
+        return Err(PaseoError::argument("provider has an invalid format"));
+    }
+    Ok(())
+}
+
+pub fn validate_title(value: Option<&str>) -> Result<(), PaseoError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.is_empty() || value.chars().count() > 160 || value.chars().any(char::is_control) {
+        return Err(PaseoError::argument("title has an invalid format"));
+    }
+    Ok(())
+}
+
+pub fn validate_reason(value: &str) -> Result<(), PaseoError> {
+    if value.chars().count() > 500 || value.chars().any(char::is_control) {
+        return Err(PaseoError::argument(
+            "reason must not exceed 500 characters or contain control characters",
+        ));
+    }
+    Ok(())
+}
+
+pub fn resolve_create_cwd(
+    ctx: &PaseoRuntimeContext,
+    requested: Option<&str>,
+) -> Result<String, PaseoError> {
+    let workspace = std::fs::canonicalize(&ctx.workspace_path)
+        .map_err(|_| PaseoError::argument("workspace path is unavailable for agent creation"))?;
+    let candidate = requested
+        .map(Path::new)
+        .unwrap_or(ctx.workspace_path.as_path());
+    if !candidate.is_absolute() {
+        return Err(PaseoError::argument("cwd must be an absolute path"));
+    }
+    let candidate = std::fs::canonicalize(candidate)
+        .map_err(|_| PaseoError::argument("cwd must identify an existing directory"))?;
+    if !candidate.is_dir() || !candidate.starts_with(&workspace) {
+        return Err(PaseoError::denied(
+            "agent cwd must be the current workspace or one of its subdirectories",
+        ));
+    }
+    Ok(candidate.display().to_string())
 }
 
 pub fn authorize(ctx: &PaseoRuntimeContext, tool: &str) -> Result<(), PaseoError> {
@@ -242,6 +353,30 @@ mod tests {
     fn agent_id_does_not_allow_flags() {
         assert!(validate_agent_id("--all").is_err());
         assert!(validate_agent_id("agent_123").is_ok());
+    }
+
+    #[test]
+    fn control_identifiers_and_provider_reject_flags() {
+        assert!(validate_request_id("req-123").is_ok());
+        assert!(validate_request_id("--all").is_err());
+        assert!(validate_provider(Some("codex/gpt-5.6-luna")).is_ok());
+        assert!(validate_provider(Some("--help")).is_err());
+    }
+
+    #[test]
+    fn create_cwd_is_confined_to_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let inside = workspace.path().join("inside");
+        std::fs::create_dir(&inside).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let context = PaseoRuntimeContext::new(
+            "ws-create".into(),
+            workspace.path().to_path_buf(),
+            PaseoIntegrationConfig::default(),
+            None,
+        );
+        assert!(resolve_create_cwd(&context, Some(inside.to_str().unwrap())).is_ok());
+        assert!(resolve_create_cwd(&context, Some(outside.path().to_str().unwrap())).is_err());
     }
 
     #[test]

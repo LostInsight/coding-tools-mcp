@@ -54,7 +54,12 @@
       tools.push("paseo_send_agent_prompt");
     }
     if (draft.access_mode === "control") {
-      tools.push("paseo_stop_agent");
+      tools.push(
+        "paseo_stop_agent",
+        "paseo_allow_permission",
+        "paseo_deny_permission",
+        "paseo_create_agent",
+      );
     }
     return tools;
   });
@@ -367,7 +372,7 @@
   {#if draft.enabled && draft.access_mode !== "read_only"}
     <div class="rounded-md border border-[var(--warning)]/40 bg-[var(--warning)]/10 px-3 py-2 text-xs text-[var(--color-text-secondary)]">
       {draft.access_mode === "control"
-        ? "Control 可发送提示并中断代理当前运行；每次停止仍要求 MCP 调用显式确认和理由。"
+        ? "Control 可发送提示、停止代理、精确批准或拒绝权限请求，并在当前工作区创建后台代理；所有控制操作均要求显式确认。"
         : "Assist 可向现有代理发送文本提示；不会批准权限或自动停止代理。"}
     </div>
   {/if}

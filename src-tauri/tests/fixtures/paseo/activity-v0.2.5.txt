@@ -1,0 +1,6 @@
+[Shell] cargo test paseo --lib -- --nocapture
+[User] Continue the implementation.
+Keep token=secret-value out of output.
+[Edit] src-tauri/src/integrations/paseo/parser.rs
+---
+[Assistant] Parser support completed.

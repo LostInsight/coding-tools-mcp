@@ -26,6 +26,9 @@ pub fn call(ctx: &PaseoRuntimeContext, name: &str, args: &Value) -> Value {
             "paseo_monitor_snapshot" => monitor_tool::monitor_snapshot(ctx, &client, args),
             "paseo_send_agent_prompt" => send_prompt(ctx, &client, args),
             "paseo_stop_agent" => stop_agent(ctx, &client, args),
+            "paseo_allow_permission" => permission_operation(ctx, &client, args, true),
+            "paseo_deny_permission" => permission_operation(ctx, &client, args, false),
+            "paseo_create_agent" => create_agent(ctx, &client, args),
             _ => Err(PaseoError::argument("unknown Paseo tool")),
         }
     });
@@ -71,6 +74,9 @@ fn health<C: PaseoClient>(
             "permissions": true,
             "send_prompt": mode.allows_assist(),
             "stop_agent": mode.allows_control()
+            ,"allow_permission": mode.allows_control()
+            ,"deny_permission": mode.allows_control()
+            ,"create_agent": mode.allows_control()
         },
         "warnings": []
     });
@@ -119,6 +125,137 @@ fn list_agents<C: PaseoClient>(
         "cli_version": client.cli_version()?,
         "missing_fields": parsed.missing_fields,
         "truncated": parsed.truncated
+    }))
+}
+
+fn permission_operation<C: PaseoClient>(
+    ctx: &PaseoRuntimeContext,
+    client: &C,
+    args: &Value,
+    allow: bool,
+) -> Result<Value, PaseoError> {
+    let agent_id = required_string(args, "agent_id")?;
+    let request_id = required_string(args, "request_id")?;
+    let reason = string_arg(args, "reason").unwrap_or("");
+    policy::validate_agent_id(agent_id)?;
+    policy::validate_request_id(request_id)?;
+    policy::validate_reason(reason)?;
+    if !bool_arg(args, "confirm", false) {
+        return Err(PaseoError::new(
+            "PASEO_CONFIRMATION_REQUIRED",
+            if allow {
+                "paseo_allow_permission requires confirm=true."
+            } else {
+                "paseo_deny_permission requires confirm=true."
+            },
+            false,
+            "policy",
+            json!({}),
+        ));
+    }
+
+    let pending = client.list_pending_permissions()?.data;
+    let exists = pending.iter().any(|permission| {
+        permission.agent_id.as_deref() == Some(agent_id)
+            && permission.request_id.as_deref() == Some(request_id)
+    });
+    if !exists {
+        return Err(PaseoError::new(
+            "PASEO_PERMISSION_NOT_FOUND",
+            "The exact pending Paseo permission request was not found.",
+            false,
+            "permission_lookup",
+            json!({"agent_id": agent_id, "request_id": request_id}),
+        ));
+    }
+
+    let action = if allow {
+        "allow_permission"
+    } else {
+        "deny_permission"
+    };
+    let operation_key = policy::begin_permission_operation(ctx, action, agent_id, request_id)?;
+    let result = if allow {
+        client.allow_permission(agent_id, request_id)
+    } else {
+        client.deny_permission(agent_id, request_id, (!reason.is_empty()).then_some(reason))
+    };
+    policy::finish_permission_operation(ctx, &operation_key);
+    if let Err(error) = result {
+        audit(ctx, action, "failed", agent_id, reason, 0);
+        return Err(error);
+    }
+    audit(ctx, action, "succeeded", agent_id, reason, 0);
+    Ok(json!({
+        "ok": true,
+        "agent_id": agent_id,
+        "request_id": request_id,
+        "decision": if allow { "allowed" } else { "denied" },
+        "interrupt_requested": false
+    }))
+}
+
+fn create_agent<C: PaseoClient>(
+    ctx: &PaseoRuntimeContext,
+    client: &C,
+    args: &Value,
+) -> Result<Value, PaseoError> {
+    let prompt = required_string(args, "prompt")?;
+    let title = bounded_string_arg(args, "title", 160)?;
+    let provider = required_string(args, "provider")?;
+    let requested_cwd = bounded_string_arg(args, "cwd", 4_096)?;
+    let reason = string_arg(args, "reason").unwrap_or("");
+    policy::validate_prompt(prompt)?;
+    policy::validate_title(title)?;
+    policy::validate_provider(Some(provider))?;
+    policy::validate_reason(reason)?;
+    if !bool_arg(args, "confirm", false) {
+        return Err(PaseoError::new(
+            "PASEO_CONFIRMATION_REQUIRED",
+            "paseo_create_agent requires confirm=true.",
+            false,
+            "policy",
+            json!({}),
+        ));
+    }
+    let cwd = policy::resolve_create_cwd(ctx, requested_cwd)?;
+    policy::begin_create(ctx)?;
+    let response = client.create_agent(prompt, title, provider, &cwd);
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            audit(
+                ctx,
+                "create_agent",
+                "failed",
+                "<new>",
+                reason,
+                prompt.chars().count(),
+            );
+            return Err(error);
+        }
+    };
+    let agent_id = response
+        .get("id")
+        .or_else(|| response.get("agentId"))
+        .or_else(|| response.get("agent_id"))
+        .and_then(Value::as_str)
+        .map(|value| redaction::bounded(&redaction::redact(value), 128));
+    audit(
+        ctx,
+        "create_agent",
+        "succeeded",
+        agent_id.as_deref().unwrap_or("<new>"),
+        reason,
+        prompt.chars().count(),
+    );
+    Ok(json!({
+        "ok": true,
+        "created": true,
+        "background": true,
+        "agent_id": agent_id,
+        "cwd": cwd,
+        "prompt_length": prompt.chars().count()
     }))
 }
 
@@ -254,11 +391,7 @@ fn send_prompt<C: PaseoClient>(
         return Err(PaseoError::argument("no_wait must be true"));
     }
     let reason = string_arg(args, "reason").unwrap_or("");
-    if reason.chars().count() > 500 {
-        return Err(PaseoError::argument(
-            "reason must not exceed 500 characters",
-        ));
-    }
+    policy::validate_reason(reason)?;
     policy::begin_send(ctx, agent_id)?;
     if let Err(error) = client.send_prompt(agent_id, prompt) {
         audit(
@@ -394,10 +527,28 @@ fn audit(
 }
 
 fn error_value(error: PaseoError) -> Value {
+    let next_actions = match error.code {
+        "PASEO_VERSION_UNSUPPORTED" => json!([{
+            "action": "update_paseo_integration",
+            "reason": "The installed CLI output format is outside the parser's supported 0.2.x range."
+        }]),
+        "PASEO_CONFIRMATION_REQUIRED" | "PASEO_ARGUMENT_INVALID" => json!([{
+            "action": "review_tool_arguments",
+            "reason": "Correct the arguments and explicitly confirm consequential operations."
+        }]),
+        "PASEO_PERMISSION_NOT_FOUND" => json!([{
+            "action": "paseo_list_pending_permissions",
+            "reason": "Refresh pending requests and use the exact agent_id and request_id."
+        }]),
+        _ => json!([{
+            "action": "paseo_health",
+            "reason": "Verify Paseo CLI and daemon connectivity."
+        }]),
+    };
     json!({
         "ok": false,
         "error": error.value(),
-        "next_actions": [{"action": "paseo_health", "reason": "Verify Paseo CLI and daemon connectivity."}]
+        "next_actions": next_actions
     })
 }
 

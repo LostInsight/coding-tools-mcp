@@ -16,7 +16,7 @@
 |------|------|------|----------|
 | Paseo 边界 | 官方 CLI 固定子命令 | 避免内部协议/包耦合 | FR-2, NFR-5 |
 | 进程执行 | `std::process::Command` + 独立 reader/timeout runner | 不经 shell，可测试且可限制输出 | FR-2 |
-| 解析 | serde JSON + 0.2.2 文本状态机 | 稳定、版本化、拒绝未知格式 | FR-3 |
+| 解析 | serde JSON + 0.2.x 文本状态机 | 稳定、版本化，兼容旧分隔记录和 0.2.5 行事件 | FR-3 |
 | 配置 | `WorkspaceProfile.integrations.paseo` + serde default | 工作区级且向后兼容 | FR-1 |
 | 敏感 host | `SecretStore` 的 `paseo_host` key | 不进入普通 profile/debug 输出 | FR-1, FR-3 |
 | 快照 | 应用配置根目录下的独立原子 JSON 文件 | 不污染项目，易限额与恢复 | FR-8 |
@@ -91,9 +91,9 @@ struct PaseoRuntimeContext {
 | Tauri save | `save_paseo_integration_settings(id, input)` | config + optional host update / DTO | FR-1, FR-12 |
 | Tauri test | `test_paseo_connection(id, draft)` | explicit draft / redacted health | FR-4, FR-12 |
 | Tauri clear | `clear_paseo_monitor_snapshots(id)` | workspace ID / removed count | FR-8, FR-12 |
-| MCP tools | eight fixed `paseo_*` schemas | bounded documented inputs / structured outputs | FR-4 至 FR-10 |
+| MCP tools | eleven fixed `paseo_*` schemas | bounded documented inputs / structured outputs | FR-4 至 FR-10 |
 
-MCP annotations are generated from separate Paseo definitions: six read-only tools are read-only/idempotent/open-world; send is write/non-destructive/non-idempotent/open-world; stop is write/destructive/non-idempotent/open-world.
+MCP annotations are generated from separate Paseo definitions: six read-only tools are read-only/idempotent/open-world; send/create are write/non-destructive/non-idempotent/open-world; stop and exact permission allow/deny are write/destructive/non-idempotent/open-world.
 
 ---
 

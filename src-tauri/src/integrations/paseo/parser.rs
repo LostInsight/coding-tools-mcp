@@ -6,7 +6,7 @@ use super::model::{
 use super::redaction::{bounded, normalize_error_signature, redact};
 
 pub const JSON_PARSER_VERSION: &str = "paseo-json-v1";
-pub const TEXT_PARSER_VERSION: &str = "paseo-0.2.2-activity-text-v1";
+pub const TEXT_PARSER_VERSION: &str = "paseo-0.2.x-activity-text-v2";
 
 pub fn parse_agents(
     raw: &str,
@@ -72,6 +72,16 @@ pub fn parse_agents(
     })
 }
 
+fn is_supported_activity_text_version(version: &str) -> bool {
+    let mut parts = version.trim_start_matches('v').split('.');
+    matches!(parts.next(), Some("0"))
+        && matches!(parts.next(), Some("2"))
+        && parts
+            .next()
+            .is_some_and(|patch| !patch.is_empty() && patch.chars().all(|ch| ch.is_ascii_digit()))
+        && parts.next().is_none()
+}
+
 pub fn parse_permissions(
     raw: &str,
     truncated: bool,
@@ -92,7 +102,12 @@ pub fn parse_permissions(
         }
         let summary = string_at(item, &["summary", "description", "command", "request"])
             .unwrap_or_else(|| permission_type.clone());
+        let request_id = safe_string_at(item, &["requestId", "request_id", "id"], 128);
+        if request_id.is_none() && !missing_fields.contains(&"request_id".to_string()) {
+            missing_fields.push("request_id".into());
+        }
         permissions.push(PermissionSummary {
+            request_id,
             agent_id: safe_string_at(item, &["agentId", "agent_id", "agent"], 128),
             permission_type: bounded(&redact(&permission_type), 120),
             requested_at,
@@ -116,13 +131,13 @@ pub fn parse_activity(
     if let Ok(root) = serde_json::from_str::<Value>(raw) {
         return parse_activity_json(&root, truncated);
     }
-    if cli_version != "0.2.2" {
+    if !is_supported_activity_text_version(cli_version) {
         return Err(PaseoError::new(
             "PASEO_VERSION_UNSUPPORTED",
-            "This Paseo CLI activity format is not supported.",
+            "This Paseo CLI activity text format is not supported; install a 0.2.x release or update the integration parser.",
             false,
             "parse_activity",
-            serde_json::json!({"cli_version": cli_version}),
+            serde_json::json!({"cli_version": cli_version, "supported": "0.2.x"}),
         ));
     }
     parse_activity_text(raw, truncated)
@@ -165,7 +180,8 @@ fn parse_activity_text(
     truncated: bool,
 ) -> Result<ParsedPaseo<Vec<ActivityEvent>>, PaseoError> {
     let normalized = raw.replace("\r\n", "\n");
-    if normalized.trim().is_empty() {
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("No activity to display.") {
         return Ok(ParsedPaseo {
             data: Vec::new(),
             source_format: "text_fallback",
@@ -174,19 +190,59 @@ fn parse_activity_text(
             truncated,
         });
     }
+
     let mut events = Vec::new();
-    for record in normalized.split("\n---\n") {
-        let record = record.trim();
-        if record.is_empty() {
+    let mut current_type: Option<String> = None;
+    let mut current_summary = String::new();
+
+    let flush = |events: &mut Vec<ActivityEvent>,
+                 current_type: &mut Option<String>,
+                 current_summary: &mut String| {
+        if let Some(event_type) = current_type.take() {
+            events.push(normalized_event(&event_type, current_summary.trim(), None));
+            current_summary.clear();
+        }
+    };
+
+    for line in normalized.lines() {
+        let line = line.trim_end();
+        if line.trim() == "---" {
+            flush(&mut events, &mut current_type, &mut current_summary);
             continue;
         }
-        let captures = text_event_pattern()
-            .captures(record)
-            .ok_or_else(|| parse_error("Activity text record has an unknown shape", truncated))?;
-        let event_type = captures.get(1).map_or("unknown", |value| value.as_str());
-        let summary = captures.get(2).map_or("", |value| value.as_str());
-        events.push(normalized_event(event_type, summary, None));
+
+        if let Some(captures) = text_event_pattern().captures(line) {
+            flush(&mut events, &mut current_type, &mut current_summary);
+            current_type = Some(
+                captures
+                    .get(1)
+                    .map_or("unknown", |value| value.as_str())
+                    .to_string(),
+            );
+            current_summary.push_str(captures.get(2).map_or("", |value| value.as_str()));
+            continue;
+        }
+
+        if line.trim().is_empty() {
+            if current_type.is_some() && !current_summary.is_empty() {
+                current_summary.push('\n');
+            }
+            continue;
+        }
+
+        if current_type.is_none() {
+            return Err(parse_error(
+                "Activity text record has an unknown shape",
+                truncated,
+            ));
+        }
+        if !current_summary.is_empty() {
+            current_summary.push('\n');
+        }
+        current_summary.push_str(line);
     }
+
+    flush(&mut events, &mut current_type, &mut current_summary);
     if events.is_empty() {
         return Err(parse_error("Activity text contained no records", truncated));
     }
@@ -291,7 +347,11 @@ fn normalize_event_type(value: &str) -> &'static str {
     let value = value.to_ascii_lowercase();
     if value.contains("error") || value.contains("fail") {
         "errors"
-    } else if value.contains("tool") || value.contains("command") {
+    } else if value.contains("tool")
+        || value.contains("command")
+        || value.contains("shell")
+        || value.contains("edit")
+    {
         "tools"
     } else if value.contains("permission") {
         "permissions"
@@ -427,10 +487,32 @@ mod tests {
     }
 
     #[test]
-    fn text_activity_requires_the_verified_version_and_shape() {
+    fn parses_v025_line_activity_and_multiline_messages() {
+        let fixture = include_str!("../../../tests/fixtures/paseo/activity-v0.2.5.txt");
+        let parsed = parse_activity(fixture, "0.2.5", false).unwrap();
+        assert_eq!(parsed.data.len(), 4);
+        assert_eq!(parsed.data[0].event_type, "tools");
+        assert_eq!(parsed.data[1].event_type, "messages");
+        assert_eq!(parsed.data[2].event_type, "tools");
+        assert!(parsed
+            .data
+            .iter()
+            .all(|event| !event.summary.contains("secret-value")));
+    }
+
+    #[test]
+    fn empty_v025_activity_is_a_valid_empty_timeline() {
+        let parsed = parse_activity("No activity to display.\r\n", "0.2.5", false).unwrap();
+        assert!(parsed.data.is_empty());
+        assert_eq!(parsed.parser_version, TEXT_PARSER_VERSION);
+    }
+
+    #[test]
+    fn text_activity_requires_a_supported_minor_version_and_known_shape() {
         let fixture = include_str!("../../../tests/fixtures/paseo/activity-v0.2.2.txt");
+        assert!(parse_activity(fixture, "0.2.3", false).is_ok());
         assert_eq!(
-            parse_activity(fixture, "0.2.3", false).unwrap_err().code,
+            parse_activity(fixture, "0.3.0", false).unwrap_err().code,
             "PASEO_VERSION_UNSUPPORTED"
         );
         assert_eq!(
@@ -458,5 +540,16 @@ mod tests {
     fn parses_empty_permissions_array() {
         let fixture = include_str!("../../../tests/fixtures/paseo/permissions-v0.2.2.json");
         assert!(parse_permissions(fixture, false).unwrap().data.is_empty());
+    }
+
+    #[test]
+    fn permission_request_ids_are_preserved() {
+        let parsed = parse_permissions(
+            r#"[{"id":"req-123","agentId":"agent-1","type":"shell","summary":"cargo test"}]"#,
+            false,
+        )
+        .unwrap();
+        assert_eq!(parsed.data[0].request_id.as_deref(), Some("req-123"));
+        assert!(!parsed.missing_fields.contains(&"request_id".into()));
     }
 }

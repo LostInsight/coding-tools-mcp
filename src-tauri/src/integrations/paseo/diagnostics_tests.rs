@@ -95,6 +95,7 @@ fn covers_immediate_diagnostic_classes() {
 #[test]
 fn pending_permission_has_priority() {
     let permission = PermissionSummary {
+        request_id: Some("req-1".into()),
         agent_id: Some("agent-1".into()),
         permission_type: "shell".into(),
         requested_at: None,

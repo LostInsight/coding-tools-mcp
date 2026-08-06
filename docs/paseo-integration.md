@@ -1,6 +1,6 @@
 # Paseo Integration
 
-Coding Tools MCP 可以把现有 Paseo daemon 作为一个可选、工作区级的控制与监控集成暴露给 MCP 客户端和 ChatGPT Actions。它不替代 Paseo 自身客户端，也不会自动创建代理、批准权限或修改 daemon 配置。
+Coding Tools MCP 可以把现有 Paseo daemon 作为一个可选、工作区级的控制与监控集成暴露给 MCP 客户端和 ChatGPT Actions。它不替代 Paseo 自身客户端；创建代理和处理权限只在 Control 模式、固定工具、精确目标和显式确认下可用，daemon 配置仍不会被修改。
 
 ## 功能定位
 
@@ -43,7 +43,7 @@ paseo --help
 
 Coding Tools MCP 不会下载、安装或升级 Paseo。Paseo binary 留空时，应用使用现有软件发现机制和 `PATH`；也可以在工作区的 **Paseo Integration** 区域手动选择可执行文件。
 
-Windows 官方 Paseo 0.2.2 桌面分发在 `PATH` 中提供 `.cmd` launcher。集成只把该 launcher 当作受限的发现线索：它验证官方固定布局并解析到同一安装中的原生 `Paseo.exe`，实际子进程始终是 `.exe`。任意 `.cmd`、`.bat` 或无法解析到官方原生 executable 的 launcher 都会在启动前被拒绝，因此不会隐式进入 Windows command shell。
+Windows 官方 Paseo 0.2.x 桌面分发可能在 `PATH` 中提供 `.cmd` launcher。集成只把该 launcher 当作受限的发现线索：它验证官方固定布局并解析到同一安装中的原生 `Paseo.exe`，实际子进程始终是 `.exe`。任意 `.cmd`、`.bat` 或无法解析到官方原生 executable 的 launcher 都会在启动前被拒绝，因此不会隐式进入 Windows command shell。
 
 ## 本地 daemon
 
@@ -84,9 +84,9 @@ Pairing offer URL 可以授予连接能力，应按 bearer credential 处理：
 | Disabled | integration 关闭，不暴露任何 `paseo_` 工具 |
 | Read only | health、agents、activity、permissions、diagnose、monitor snapshot |
 | Assist | Read only + `paseo_send_agent_prompt` |
-| Control | Assist + `paseo_stop_agent` |
+| Control | Assist + stop、精确 allow/deny permission、创建后台 agent |
 
-Assist 和 Control 都不会批准权限。Control 允许中断当前代理运行，因此 UI 会显示风险提示；每次 `paseo_stop_agent` 调用仍必须传 `confirm=true` 和非空 reason。
+Control 操作都要求 `confirm=true`。权限操作必须同时提供精确 `agent_id` 与 `request_id`，不暴露 `--all`；拒绝权限不会默认中断 agent。创建 agent 的 cwd 只能是当前工作区或其子目录。
 
 ## MCP 工具
 
@@ -104,7 +104,7 @@ Assist 和 Control 都不会批准权限。Control 允许中断当前代理运�
 
 ### `paseo_list_pending_permissions`
 
-只查询待处理权限。返回 agent、类型、时间和脱敏摘要。第一版没有 approve/deny 工具。
+查询待处理权限，返回精确 request ID、agent、类型、时间和脱敏摘要。Control 模式可把其中一个精确 request ID 交给 allow/deny 工具。
 
 ### `paseo_diagnose_agent`
 
@@ -137,7 +137,15 @@ UNKNOWN
 
 ### `paseo_stop_agent`
 
-仅 Control，必须 `confirm=true` 且 reason 非空。Paseo CLI 0.2.2 将 `stop` 描述为“interrupt a running agent; no-op for idle agents”，所以工具使用准确名称 `stop`，不声称删除或永久 kill 会话。返回停止前后状态，不提供 archive/delete/kill。
+仅 Control，必须 `confirm=true` 且 reason 非空。Paseo CLI 将 `stop` 描述为中断当前运行，所以工具不声称删除或永久 kill 会话。返回停止前后状态，不提供 archive/delete/kill。
+
+### `paseo_allow_permission` / `paseo_deny_permission`
+
+仅 Control，必须 `confirm=true`，并使用 `paseo_list_pending_permissions` 返回的精确 `agent_id` 与 `request_id`。工具不会暴露 `--all`。deny 可把可选 reason 作为 Paseo denial message，但不会使用 `--interrupt`。
+
+### `paseo_create_agent`
+
+仅 Control，必须 `confirm=true`，并显式提供 provider（如 `codex/gpt-5.6-luna`）。使用 `paseo run --background --json` 创建 agent；prompt、title、provider 和 cwd 都作为独立进程参数传递。cwd 默认当前工作区，显式 cwd 也必须位于当前工作区内。
 
 ## ChatGPT 连接
 
@@ -197,17 +205,18 @@ REPEATED_FAILURE：
 | `PASEO_OUTPUT_LIMIT` | JSON 超出上限而无法完整解析 | 收窄过滤或提高受限输出上限 |
 | `PASEO_PARSE_ERROR` | CLI 返回未知格式 | 检查 CLI 版本和兼容说明 |
 | `PASEO_COMMAND_FAILED` | CLI 非零退出 | 查看脱敏 stderr summary 并调用 health |
-| `PASEO_CONFIRMATION_REQUIRED` | stop 缺少显式确认 | 确认后传 `confirm=true` 和 reason |
+| `PASEO_CONFIRMATION_REQUIRED` | Control 操作缺少显式确认 | 核对目标后传 `confirm=true` |
+| `PASEO_PERMISSION_NOT_FOUND` | 精确 agent/request ID 不再待处理 | 重新查询 pending permissions |
 | `PASEO_RATE_LIMITED` | 请求过快或同操作正在进行 | 等待返回建议时间后重试 |
 | `PASEO_SNAPSHOT_CORRUPTED` | 快照存储不可写/不可解析 | 清除当前工作区快照并重试 |
 
 ## 版本兼容
 
-初始验证基线为 Paseo CLI `0.2.2`：
+验证基线覆盖 Paseo CLI `0.2.x`，当前真实 smoke test 目标为 `0.2.5`：
 
 - `ls`、`permit ls`、`send`、`stop` 与本地 `daemon status` 使用 JSON；
 - `logs` 在命令级没有 `--json`，全局 `--json`/`--format json` 仍返回文本；
-- activity parser 版本为 `paseo-0.2.2-activity-text-v1`；
+- activity parser 版本为 `paseo-0.2.x-activity-text-v2`，兼容旧 `---` 分隔和 0.2.5 的逐行 `[Kind] payload` 输出，并把 `No activity to display.` 作为有效空结果；
 - remote health 不使用不受支持的 `daemon status --host`。
 
 工具结果返回 `source_format`、`parser_version`、CLI version、missing fields 和 truncation。未知 activity 文本版本会返回 `PASEO_VERSION_UNSUPPORTED`，不会猜测字段。
@@ -216,9 +225,9 @@ REPEATED_FAILURE：
 
 通用 `paseo_exec` 会绕过 access mode、确认、参数上限、脱敏和审计，并可能暴露 archive/delete/kill、permission approval、daemon 修改等高风险能力。固定工具让 MCP schema、annotations、策略与测试保持一致，也能阻止 shell/flag 注入。
 
-## 为什么第一版不允许批准权限
+## 为什么只允许精确权限操作
 
-权限请求可能授权文件写入、命令执行、网络访问或敏感资源。模型自动 approve/deny 会把“监控”变成隐式授权系统，因此第一版只报告待处理请求，用户必须回到可信 Paseo 界面作决定。
+权限请求可能授权文件写入、命令执行、网络访问或敏感资源。因此工具只在 Control 模式暴露，要求显式确认、精确 agent/request ID、并发去重和脱敏审计；不会提供批量 `--all`，也不会在 deny 时默认中断 agent。
 
 ## 完全关闭
 
