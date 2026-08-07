@@ -10,7 +10,8 @@ use crate::error::{AppError, AppResult};
 use crate::platform::platform;
 use crate::settings::ProxyConfig;
 
-const READY_TIMEOUT: Duration = Duration::from_secs(30);
+const QUICK_READY_TIMEOUT: Duration = Duration::from_secs(30);
+const NAMED_READY_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Handle to a supervised `cloudflared` child process.
 pub struct CloudflareTunnelHandle {
@@ -309,26 +310,31 @@ pub async fn spawn_cloudflare_tunnel(
         drop(ready_tx);
     }
 
-    let ready = time::timeout(READY_TIMEOUT, ready_rx)
+    let ready_timeout = cloudflare_ready_timeout(quick);
+    let ready = time::timeout(ready_timeout, ready_rx)
         .await
         .map_err(|_| {
+            terminate_unready_cloudflared(&mut child, pid);
             if quick {
                 AppError::Message(format!(
                     "cloudflared 已启动，但在 {} 秒内没有返回 trycloudflare.com 公网地址。\n\
                      请检查：1) MCP 服务是否已在本机端口 {port} 运行；2) 设置 → 通用 → 网络代理 是否配置为手动代理（如 http://127.0.0.1:7890）；\
                      3) 查看日志 {log_hint}",
-                    READY_TIMEOUT.as_secs(),
+                    ready_timeout.as_secs(),
                     log_hint = log_path_for_error.display()
                 ))
             } else {
                 AppError::Message(format!(
-                    "cloudflared 已启动，但在 {} 秒内未注册 Cloudflare Named Tunnel。请检查 Tunnel Token、网络代理和日志：{}",
-                    READY_TIMEOUT.as_secs(),
+                    "cloudflared 已启动，但在 {} 秒内仍未注册 Cloudflare Named Tunnel。已停止本次 cloudflared 进程；请检查 Tunnel Token、网络代理和日志：{}",
+                    ready_timeout.as_secs(),
                     log_path_for_error.display()
                 ))
             }
         })?
-        .map_err(|_| AppError::Message("cloudflared 输出流意外结束。".into()))?;
+        .map_err(|_| {
+            terminate_unready_cloudflared(&mut child, pid);
+            AppError::Message("cloudflared 输出流意外结束。".into())
+        })?;
 
     let public_url = if quick {
         ready.public_url.ok_or_else(|| {
@@ -440,9 +446,24 @@ async fn stream_cloudflare_output<R, E>(
     }
 }
 
+fn cloudflare_ready_timeout(quick: bool) -> Duration {
+    if quick {
+        QUICK_READY_TIMEOUT
+    } else {
+        NAMED_READY_TIMEOUT
+    }
+}
+
 fn named_tunnel_is_ready(line: &str) -> bool {
     line.to_ascii_lowercase()
         .contains("registered tunnel connection")
+}
+
+fn terminate_unready_cloudflared(child: &mut Child, pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = platform().terminate_process_tree(pid);
+    }
+    let _ = child.start_kill();
 }
 
 pub async fn stop_child(mut child: Child, pid: Option<u32>) -> AppResult<()> {
@@ -457,7 +478,7 @@ pub async fn stop_child(mut child: Child, pid: Option<u32>) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_trycloudflare_url, named_tunnel_is_ready};
+    use super::{cloudflare_ready_timeout, extract_trycloudflare_url, named_tunnel_is_ready};
 
     #[test]
     fn extracts_trycloudflare_url_from_log_line() {
@@ -482,5 +503,11 @@ mod tests {
         assert!(!named_tunnel_is_ready(
             "INF Starting metrics server on 127.0.0.1:20241/metrics"
         ));
+    }
+
+    #[test]
+    fn named_tunnel_allows_protocol_fallback_time() {
+        assert_eq!(cloudflare_ready_timeout(true).as_secs(), 30);
+        assert_eq!(cloudflare_ready_timeout(false).as_secs(), 180);
     }
 }
