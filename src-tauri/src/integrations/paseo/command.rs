@@ -183,7 +183,6 @@ fn apply_minimal_environment(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[cfg(windows)]
     #[test]
@@ -232,21 +231,26 @@ mod tests {
 
     #[test]
     fn timeout_terminates_the_direct_child() {
-        #[cfg(windows)]
-        let (program, args) = (
-            PathBuf::from(r"C:\Windows\System32\ping.exe"),
-            vec!["127.0.0.1".into(), "-n".into(), "10".into()],
-        );
-        #[cfg(not(windows))]
-        let (program, args) = (PathBuf::from("/bin/sleep"), vec!["2".into()]);
+        let program = std::env::current_exe().expect("current test executable");
+        let args = vec![
+            "--ignored".into(),
+            "--exact".into(),
+            "integrations::paseo::command::tests::timeout_child_fixture".into(),
+        ];
         let error = SystemPaseoCommandRunner
             .run(&PaseoCommandSpec {
                 program,
                 args,
-                timeout_ms: 20,
+                timeout_ms: 500,
                 max_output_bytes: 1_024,
             })
             .expect_err("timeout");
         assert_eq!(error.code, "PASEO_COMMAND_TIMEOUT");
+    }
+
+    #[test]
+    #[ignore = "helper process for timeout_terminates_the_direct_child"]
+    fn timeout_child_fixture() {
+        std::thread::sleep(Duration::from_secs(10));
     }
 }
