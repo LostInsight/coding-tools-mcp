@@ -1,11 +1,12 @@
 <script lang="ts">
+  import { getVersion } from "@tauri-apps/api/app";
   import ThemeToggle from "$lib/components/ThemeToggle.svelte";
   import { APP_VERSION } from "$lib/app-version";
   import { REPO_URL } from "$lib/app-links";
   import { openUrl } from "$lib/api/app-info";
   import { message } from "@tauri-apps/plugin-dialog";
   import { Github } from "@lucide/svelte";
-  import type { Snippet } from "svelte";
+  import { onMount, type Snippet } from "svelte";
 
   interface Props {
     children: Snippet;
@@ -15,6 +16,17 @@
   }
 
   let { children, sidebar, onAddWorkspace, settingsNav }: Props = $props();
+  let displayVersion = $state(APP_VERSION);
+
+  onMount(() => {
+    void getVersion()
+      .then((version) => {
+        if (version?.trim()) displayVersion = version.trim();
+      })
+      .catch(() => {
+        displayVersion = APP_VERSION;
+      });
+  });
 
   async function openRepo() {
     try {
@@ -54,7 +66,7 @@
         <p class="tx-sidebar-section-label">设置</p>
         {@render settingsNav()}
         <div class="tx-app-meta">
-          <p class="tx-app-version">v{APP_VERSION}</p>
+          <p class="tx-app-version">v{displayVersion}</p>
           <button type="button" class="tx-repo-link" onclick={() => void openRepo()}>
             <Github size={12} strokeWidth={2} />
             <span>仓库</span>
@@ -64,7 +76,7 @@
     {:else}
       <div class="tx-sidebar-footer">
         <div class="tx-app-meta">
-          <p class="tx-app-version">v{APP_VERSION}</p>
+          <p class="tx-app-version">v{displayVersion}</p>
           <button type="button" class="tx-repo-link" onclick={() => void openRepo()}>
             <Github size={12} strokeWidth={2} />
             <span>仓库</span>
