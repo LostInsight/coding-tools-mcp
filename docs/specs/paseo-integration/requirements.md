@@ -7,7 +7,7 @@
 ## 历史经验与坑（来自记忆库）
 
 - **可复用经验**: 当前工作区通过 serde 默认值兼容增量配置；MCP 与 Actions 共用 `call_tool`，适合在统一入口增加隔离分支；敏感值应复用 `SecretStore`。
-- **必须规避的坑**: 当前 Paseo CLI 0.2.2 的 `logs` 即使使用全局 JSON 选项仍输出文本，且 `daemon status` 不接受 `--host`。当前 MCP 声明 `listChanged=false`，运行中的 listener 也持有启动时配置快照。
+- **必须规避的坑**: 当前 Paseo CLI 0.2.2 的 `logs` 即使使用全局 JSON 选项仍输出文本，且 `daemon status` 不接受 `--host`。运行中的 listener 持有启动时配置快照；配置变更通过 scoped restart 生效，并由 MCP SSE `list_changed` 通知触发支持该协议的客户端刷新目录。
 
 ---
 
@@ -30,7 +30,7 @@
 1. WHEN 旧工作区配置被加载 THEN 系统 SHALL 以 `enabled=false`、`access_mode=read_only` 和安全默认值补全 Paseo 配置。
 2. WHEN Paseo 未启用 THEN 系统 SHALL 不暴露工具、不探测 CLI、不创建进程、不创建快照文件且不增加既有请求路径工作量。
 3. WHEN 配置保存 THEN 系统 SHALL 只更新当前工作区，并仅重启当前工作区中正在运行且与工具清单相关的服务。
-4. WHEN MCP 不支持工具清单变更通知 THEN UI SHALL 提示客户端可能需要重新连接。
+4. WHEN 客户端支持 MCP 工具清单变更通知 THEN 系统 SHALL 通过可达 SSE 通道发送 `notifications/tools/list_changed`；OTHERWISE UI SHALL 提示客户端重新连接。
 
 ### FR-2: 固定且安全的 CLI 适配边界
 

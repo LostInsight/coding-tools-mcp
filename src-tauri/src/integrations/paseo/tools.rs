@@ -58,6 +58,15 @@ fn health<C: PaseoClient>(
     }
     let status = client.daemon_status()?;
     let mode = ctx.config.access_mode;
+    let warnings = if status.reachable {
+        Vec::new()
+    } else {
+        vec![json!({
+            "code": "PASEO_DAEMON_UNREACHABLE",
+            "message": "The Paseo CLI responded, but no reachable daemon was reported.",
+            "retryable": true
+        })]
+    };
     let value = json!({
         "ok": status.reachable,
         "cli_available": true,
@@ -78,7 +87,7 @@ fn health<C: PaseoClient>(
             ,"deny_permission": mode.allows_control()
             ,"create_agent": mode.allows_control()
         },
-        "warnings": []
+        "warnings": warnings
     });
     *ctx.state.health.lock().expect("paseo health lock") = Some(super::model::CachedHealth {
         observed_at: std::time::Instant::now(),
@@ -124,6 +133,7 @@ fn list_agents<C: PaseoClient>(
         "parser_version": parsed.parser_version,
         "cli_version": client.cli_version()?,
         "missing_fields": parsed.missing_fields,
+        "warnings": parsed.warnings,
         "truncated": parsed.truncated
     }))
 }
@@ -284,6 +294,7 @@ fn activity<C: PaseoClient>(
         "parser_version": parsed.parser_version,
         "cli_version": client.cli_version()?,
         "missing_fields": parsed.missing_fields,
+        "warnings": parsed.warnings,
         "truncated": parsed.truncated
     }))
 }
@@ -307,6 +318,7 @@ fn permissions<C: PaseoClient>(client: &C, args: &Value) -> Result<Value, PaseoE
         "parser_version": parsed.parser_version,
         "cli_version": client.cli_version()?,
         "missing_fields": parsed.missing_fields,
+        "warnings": parsed.warnings,
         "truncated": parsed.truncated
     }))
 }
@@ -528,9 +540,25 @@ fn audit(
 
 fn error_value(error: PaseoError) -> Value {
     let next_actions = match error.code {
+        "PASEO_DAEMON_UNREACHABLE" => json!([{
+            "action": "check_paseo_daemon",
+            "reason": "Confirm `paseo daemon status --json`, the configured remote host, and any proxy before retrying."
+        }]),
+        "PASEO_CLI_TIMEOUT" => json!([{
+            "action": "retry_with_bounded_timeout",
+            "reason": "The CLI process exceeded command_timeout_ms; check daemon load and increase the configured timeout only if needed."
+        }]),
+        "PASEO_PARSE_PARTIAL" => json!([{
+            "action": "retry_smaller_activity_window",
+            "reason": "Reduce tail or max_bytes and compare with the raw `paseo logs <agent>` output."
+        }]),
+        "PASEO_UNKNOWN_ACTIVITY" => json!([{
+            "action": "inspect_paseo_activity_format",
+            "reason": "The CLI returned non-empty activity in an unknown format; capture a redacted raw sample and verify the CLI version."
+        }]),
         "PASEO_VERSION_UNSUPPORTED" => json!([{
             "action": "update_paseo_integration",
-            "reason": "The installed CLI output format is outside the parser's supported 0.2.x range."
+            "reason": "The installed CLI output format is outside the parser's supported 0.2.x-0.3.x range."
         }]),
         "PASEO_CONFIRMATION_REQUIRED" | "PASEO_ARGUMENT_INVALID" => json!([{
             "action": "review_tool_arguments",
@@ -539,6 +567,10 @@ fn error_value(error: PaseoError) -> Value {
         "PASEO_PERMISSION_NOT_FOUND" => json!([{
             "action": "paseo_list_pending_permissions",
             "reason": "Refresh pending requests and use the exact agent_id and request_id."
+        }]),
+        "PASEO_AGENT_NOT_FOUND" => json!([{
+            "action": "paseo_list_agents",
+            "reason": "Refresh the agent list and use an exact active or archived agent ID."
         }]),
         _ => json!([{
             "action": "paseo_health",
@@ -591,5 +623,33 @@ mod tests {
         let context = PaseoRuntimeContext::disabled(std::path::PathBuf::from("."));
         let result = test_health(&context, true);
         assert_eq!(result["error"]["code"], "PASEO_DISABLED");
+    }
+
+    #[test]
+    fn specific_errors_return_actionable_non_recursive_recovery_steps() {
+        let timeout = error_value(PaseoError::new(
+            "PASEO_CLI_TIMEOUT",
+            "timeout",
+            true,
+            "activity",
+            json!({"timeout_ms": 1000}),
+        ));
+        assert_eq!(timeout["error"]["code"], "PASEO_CLI_TIMEOUT");
+        assert_eq!(
+            timeout["next_actions"][0]["action"],
+            "retry_with_bounded_timeout"
+        );
+
+        let unknown = error_value(PaseoError::new(
+            "PASEO_UNKNOWN_ACTIVITY",
+            "unknown activity",
+            false,
+            "parse_activity",
+            json!({}),
+        ));
+        assert_eq!(
+            unknown["next_actions"][0]["action"],
+            "inspect_paseo_activity_format"
+        );
     }
 }

@@ -501,7 +501,7 @@
     showToast(
       restartFailed
         ? "配置已保存，但当前工作区服务重启失败；请手动重启后再连接。"
-        : "工具清单已更新；MCP 客户端可能需要重新连接。",
+        : "工具清单已更新；支持 listChanged 的 MCP 客户端会自动刷新，其他客户端请重新连接。",
       { kind: restartFailed ? "warning" : "info", duration: 8000 },
     );
     return saved;

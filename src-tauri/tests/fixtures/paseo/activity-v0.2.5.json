@@ -1,0 +1,9 @@
+{
+  "entries": [
+    "[Shell] cargo check",
+    {
+      "role": "assistant",
+      "content": "done"
+    }
+  ]
+}

@@ -6,7 +6,7 @@ use super::model::{
 use super::redaction::{bounded, normalize_error_signature, redact};
 
 pub const JSON_PARSER_VERSION: &str = "paseo-json-v1";
-pub const TEXT_PARSER_VERSION: &str = "paseo-0.2.x-activity-text-v2";
+pub const TEXT_PARSER_VERSION: &str = "paseo-0.2.x-0.3.x-activity-text-v3";
 
 pub fn parse_agents(
     raw: &str,
@@ -68,6 +68,7 @@ pub fn parse_agents(
         source_format: "json",
         parser_version: JSON_PARSER_VERSION,
         missing_fields: response_missing,
+        warnings: Vec::new(),
         truncated,
     })
 }
@@ -75,7 +76,7 @@ pub fn parse_agents(
 fn is_supported_activity_text_version(version: &str) -> bool {
     let mut parts = version.trim_start_matches('v').split('.');
     matches!(parts.next(), Some("0"))
-        && matches!(parts.next(), Some("2"))
+        && matches!(parts.next(), Some("2" | "3"))
         && parts
             .next()
             .is_some_and(|patch| !patch.is_empty() && patch.chars().all(|ch| ch.is_ascii_digit()))
@@ -119,6 +120,7 @@ pub fn parse_permissions(
         source_format: "json",
         parser_version: JSON_PARSER_VERSION,
         missing_fields,
+        warnings: Vec::new(),
         truncated,
     })
 }
@@ -134,10 +136,10 @@ pub fn parse_activity(
     if !is_supported_activity_text_version(cli_version) {
         return Err(PaseoError::new(
             "PASEO_VERSION_UNSUPPORTED",
-            "This Paseo CLI activity text format is not supported; install a 0.2.x release or update the integration parser.",
+            "This Paseo CLI activity text format is not supported; install a 0.2.x or 0.3.x release, or update the integration parser.",
             false,
             "parse_activity",
-            serde_json::json!({"cli_version": cli_version, "supported": "0.2.x"}),
+            serde_json::json!({"cli_version": cli_version, "supported": "0.2.x-0.3.x"}),
         ));
     }
     parse_activity_text(raw, truncated)
@@ -151,26 +153,61 @@ fn parse_activity_json(
         .as_array()
         .or_else(|| root.get("events").and_then(Value::as_array))
         .or_else(|| root.get("activity").and_then(Value::as_array))
-        .ok_or_else(|| parse_error("Activity JSON must contain an array", truncated))?;
-    let events = items
-        .iter()
-        .map(|item| {
-            let event_type =
-                string_at(item, &["type", "eventType", "kind"]).unwrap_or_else(|| "unknown".into());
-            let raw_summary =
-                string_at(item, &["summary", "message", "text", "output"]).unwrap_or_default();
-            normalized_event(
-                &event_type,
-                &raw_summary,
-                string_at(item, &["timestamp", "createdAt", "at"]),
-            )
-        })
-        .collect();
+        .or_else(|| root.get("entries").and_then(Value::as_array))
+        .or_else(|| root.get("logs").and_then(Value::as_array))
+        .or_else(|| root.get("data").and_then(Value::as_array))
+        .ok_or_else(|| unknown_activity("Activity JSON does not contain a known event array", truncated, 0))?;
+    let mut events = Vec::with_capacity(items.len());
+    let mut skipped_records = 0_usize;
+    let mut missing_fields = Vec::new();
+    for item in items {
+        if let Some(line) = item.as_str() {
+            if let Some(captures) = text_event_pattern().captures(line) {
+                events.push(normalized_event(
+                    captures.get(1).map_or("unknown", |value| value.as_str()),
+                    captures.get(2).map_or("", |value| value.as_str()),
+                    None,
+                ));
+                add_missing_field(&mut missing_fields, "event_timestamps");
+            } else {
+                skipped_records += 1;
+            }
+            continue;
+        }
+
+        let event_type = string_at(item, &["type", "eventType", "kind", "role"]);
+        let raw_summary = string_at(item, &["summary", "message", "text", "output", "content"]);
+        if event_type.is_none() && raw_summary.as_deref().is_none_or(str::is_empty) {
+            skipped_records += 1;
+            continue;
+        }
+        let occurred_at = string_at(item, &["timestamp", "createdAt", "created_at", "at"]);
+        if event_type.is_none() {
+            add_missing_field(&mut missing_fields, "event_type");
+        }
+        if occurred_at.is_none() {
+            add_missing_field(&mut missing_fields, "event_timestamps");
+        }
+        events.push(normalized_event(
+            event_type.as_deref().unwrap_or("unknown"),
+            raw_summary.as_deref().unwrap_or(""),
+            occurred_at,
+        ));
+    }
+    if events.is_empty() && !items.is_empty() {
+        return Err(unknown_activity(
+            "Paseo returned non-empty activity JSON with no recognized records",
+            truncated,
+            skipped_records,
+        ));
+    }
+    let warnings = partial_warnings(skipped_records, truncated);
     Ok(ParsedPaseo {
         data: events,
         source_format: "json",
         parser_version: JSON_PARSER_VERSION,
-        missing_fields: Vec::new(),
+        missing_fields,
+        warnings,
         truncated,
     })
 }
@@ -187,6 +224,7 @@ fn parse_activity_text(
             source_format: "text_fallback",
             parser_version: TEXT_PARSER_VERSION,
             missing_fields: vec!["event_timestamps".into()],
+            warnings: partial_warnings(0, truncated),
             truncated,
         });
     }
@@ -194,6 +232,7 @@ fn parse_activity_text(
     let mut events = Vec::new();
     let mut current_type: Option<String> = None;
     let mut current_summary = String::new();
+    let mut skipped_lines = 0_usize;
 
     let flush = |events: &mut Vec<ActivityEvent>,
                  current_type: &mut Option<String>,
@@ -231,10 +270,8 @@ fn parse_activity_text(
         }
 
         if current_type.is_none() {
-            return Err(parse_error(
-                "Activity text record has an unknown shape",
-                truncated,
-            ));
+            skipped_lines += 1;
+            continue;
         }
         if !current_summary.is_empty() {
             current_summary.push('\n');
@@ -244,15 +281,58 @@ fn parse_activity_text(
 
     flush(&mut events, &mut current_type, &mut current_summary);
     if events.is_empty() {
-        return Err(parse_error("Activity text contained no records", truncated));
+        return Err(unknown_activity(
+            "Paseo activity text contained no recognized records",
+            truncated,
+            skipped_lines,
+        ));
     }
     Ok(ParsedPaseo {
         data: events,
         source_format: "text_fallback",
         parser_version: TEXT_PARSER_VERSION,
         missing_fields: vec!["event_timestamps".into()],
+        warnings: partial_warnings(skipped_lines, truncated),
         truncated,
     })
+}
+
+fn add_missing_field(fields: &mut Vec<String>, field: &str) {
+    if !fields.iter().any(|value| value == field) {
+        fields.push(field.into());
+    }
+}
+
+fn partial_warnings(skipped_records: usize, truncated: bool) -> Vec<Value> {
+    if skipped_records == 0 && !truncated {
+        return Vec::new();
+    }
+    vec![serde_json::json!({
+        "code": "PASEO_PARSE_PARTIAL",
+        "message": "Paseo activity was only partially parsed; recognized events were preserved.",
+        "retryable": true,
+        "details": {
+            "skipped_records": skipped_records,
+            "truncated": truncated
+        }
+    })]
+}
+
+fn unknown_activity(message: &str, truncated: bool, skipped_records: usize) -> PaseoError {
+    PaseoError::new(
+        if truncated {
+            "PASEO_PARSE_PARTIAL"
+        } else {
+            "PASEO_UNKNOWN_ACTIVITY"
+        },
+        message,
+        truncated,
+        "parse_activity",
+        serde_json::json!({
+            "skipped_records": skipped_records,
+            "truncated": truncated
+        }),
+    )
 }
 
 fn normalized_event(
@@ -434,7 +514,8 @@ fn labels_at(value: &Value) -> Vec<String> {
 fn text_event_pattern() -> &'static regex::Regex {
     static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     PATTERN.get_or_init(|| {
-        regex::Regex::new(r"(?s)^\[([A-Za-z_-]{1,32})\]\s*(.*)$").expect("activity text regex")
+        regex::Regex::new(r"(?s)^\[([A-Za-z0-9_-]{1,32})\]\s*(.*)$")
+            .expect("activity text regex")
     })
 }
 
@@ -512,15 +593,45 @@ mod tests {
         let fixture = include_str!("../../../tests/fixtures/paseo/activity-v0.2.2.txt");
         assert!(parse_activity(fixture, "0.2.3", false).is_ok());
         assert_eq!(
-            parse_activity(fixture, "0.3.0", false).unwrap_err().code,
+            parse_activity(fixture, "0.4.0", false).unwrap_err().code,
             "PASEO_VERSION_UNSUPPORTED"
         );
         assert_eq!(
             parse_activity("unstructured output", "0.2.2", false)
                 .unwrap_err()
                 .code,
-            "PASEO_PARSE_ERROR"
+            "PASEO_UNKNOWN_ACTIVITY"
         );
+    }
+
+    #[test]
+    fn partial_activity_preserves_known_records_and_reports_a_warning() {
+        let parsed = parse_activity(
+            "Paseo activity follows\n[Shell2] cargo test\n[Assistant] done",
+            "0.2.5",
+            false,
+        )
+        .unwrap();
+        assert_eq!(parsed.data.len(), 2);
+        assert_eq!(parsed.warnings[0]["code"], "PASEO_PARSE_PARTIAL");
+        assert_eq!(parsed.warnings[0]["details"]["skipped_records"], 1);
+    }
+
+    #[test]
+    fn activity_json_accepts_v025_envelopes_and_string_records() {
+        let fixture = include_str!("../../../tests/fixtures/paseo/activity-v0.2.5.json");
+        let parsed = parse_activity(fixture, "0.2.5", false).unwrap();
+        assert_eq!(parsed.data.len(), 2);
+        assert!(parsed.warnings.is_empty());
+    }
+
+    #[test]
+    fn parses_v030_line_activity_from_real_cli_shape() {
+        let fixture = include_str!("../../../tests/fixtures/paseo/activity-v0.3.0.txt");
+        let parsed = parse_activity(fixture, "0.3.0", false).unwrap();
+        assert_eq!(parsed.data.len(), 3);
+        assert_eq!(parsed.source_format, "text_fallback");
+        assert!(parsed.warnings.is_empty());
     }
 
     #[test]

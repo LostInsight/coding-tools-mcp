@@ -118,7 +118,7 @@ impl PaseoCommandRunner for SystemPaseoCommandRunner {
         };
         if timed_out {
             return Err(PaseoError::new(
-                "PASEO_COMMAND_TIMEOUT",
+                "PASEO_CLI_TIMEOUT",
                 "Paseo command exceeded the configured timeout.",
                 true,
                 "execute",
@@ -245,7 +245,7 @@ mod tests {
                 max_output_bytes: 1_024,
             })
             .expect_err("timeout");
-        assert_eq!(error.code, "PASEO_COMMAND_TIMEOUT");
+        assert_eq!(error.code, "PASEO_CLI_TIMEOUT");
     }
 
     #[test]

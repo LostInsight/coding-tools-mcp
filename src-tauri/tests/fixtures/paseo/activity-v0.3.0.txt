@@ -1,0 +1,3 @@
+[Shell] cargo test --manifest-path src-tauri\Cargo.toml --lib integrations::paseo
+[Assistant] Paseo 0.3.0 activity remains line-oriented text.
+[Shell2] npm run check

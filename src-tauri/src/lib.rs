@@ -96,9 +96,12 @@ pub fn run() {
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| {
                         if event.id.as_ref() == "reload-ui" {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.eval("window.location.reload()");
-                            }
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(error) = recreate_ui_webview(app).await {
+                                    eprintln!("tray UI recreate failed: {error}");
+                                }
+                            });
                         }
                     });
                 if let Some(icon) = app.default_window_icon().cloned() {

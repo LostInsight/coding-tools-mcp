@@ -214,6 +214,7 @@ pub struct ParsedPaseo<T> {
     pub source_format: &'static str,
     pub parser_version: &'static str,
     pub missing_fields: Vec<String>,
+    pub warnings: Vec<Value>,
     pub truncated: bool,
 }
 

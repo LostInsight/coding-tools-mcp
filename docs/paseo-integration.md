@@ -43,7 +43,7 @@ paseo --help
 
 Coding Tools MCP 不会下载、安装或升级 Paseo。Paseo binary 留空时，应用使用现有软件发现机制和 `PATH`；也可以在工作区的 **Paseo Integration** 区域手动选择可执行文件。
 
-Windows 官方 Paseo 0.2.x 桌面分发可能在 `PATH` 中提供 `.cmd` launcher。集成只把该 launcher 当作受限的发现线索：它验证官方固定布局并解析到同一安装中的原生 `Paseo.exe`，实际子进程始终是 `.exe`。任意 `.cmd`、`.bat` 或无法解析到官方原生 executable 的 launcher 都会在启动前被拒绝，因此不会隐式进入 Windows command shell。
+Windows 官方 Paseo 0.2.x/0.3.x 桌面分发可能在 `PATH` 中提供 `.cmd` launcher。集成只把该 launcher 当作受限的发现线索：它验证官方固定布局并解析到同一安装中的原生 `Paseo.exe`，实际子进程始终是 `.exe`。任意 `.cmd`、`.bat` 或无法解析到官方原生 executable 的 launcher 都会在启动前被拒绝，因此不会隐式进入 Windows command shell。
 
 ## 本地 daemon
 
@@ -53,7 +53,7 @@ Windows 官方 Paseo 0.2.x 桌面分发可能在 `PATH` 中提供 `.cmd` launche
 4. 选择访问模式并保存。
 5. 点击 **测试连接**，确认 CLI 版本与 daemon reachable。
 
-本地健康检查使用 `paseo daemon status --json`。保存配置时，只重启当前工作区中已经运行的 MCP/Actions 服务；其他工作区不会重启。由于当前 MCP server 声明 `tools.listChanged=false`，客户端可能需要断开后重新连接才能刷新工具清单。
+本地健康检查使用 `paseo daemon status --json`。保存配置时，只重启当前工作区中已经运行的 MCP/Actions 服务；其他工作区不会重启。MCP server 声明 `tools.listChanged=true`，并在客户端以 `Accept: text/event-stream` 订阅 `/mcp` 时发送 `notifications/tools/list_changed`；不支持该通知通道的客户端仍需断开后重新连接才能刷新工具清单。
 
 ## 远程 host
 
@@ -201,7 +201,9 @@ REPEATED_FAILURE：
 | `PASEO_HOST_INVALID` | host 格式不合法 | 使用 `host:port` 或受支持的 `tcp://` 形式 |
 | `PASEO_AGENT_NOT_FOUND` | agent ID 不存在或不可见 | 重新 list agents 并使用完整稳定 ID |
 | `PASEO_ARGUMENT_INVALID` | 参数为空、超长或越界 | 按 tool schema 修正 |
-| `PASEO_COMMAND_TIMEOUT` | CLI 超时并被终止 | 检查 daemon，谨慎提高 timeout |
+| `PASEO_CLI_TIMEOUT` | CLI 超时并被终止 | 检查 daemon 负载，必要时谨慎提高 timeout |
+| `PASEO_PARSE_PARTIAL` | 仅部分 activity 可识别或输出被截断 | 保留已识别事件，缩小 tail/max_bytes 后重试 |
+| `PASEO_UNKNOWN_ACTIVITY` | 非空 activity 不符合已知 text/JSON 格式 | 核对 CLI 版本并采集脱敏后的原始输出样本 |
 | `PASEO_OUTPUT_LIMIT` | JSON 超出上限而无法完整解析 | 收窄过滤或提高受限输出上限 |
 | `PASEO_PARSE_ERROR` | CLI 返回未知格式 | 检查 CLI 版本和兼容说明 |
 | `PASEO_COMMAND_FAILED` | CLI 非零退出 | 查看脱敏 stderr summary 并调用 health |
@@ -212,11 +214,11 @@ REPEATED_FAILURE：
 
 ## 版本兼容
 
-验证基线覆盖 Paseo CLI `0.2.x`，当前真实 smoke test 目标为 `0.2.5`：
+验证基线覆盖 Paseo CLI `0.2.x-0.3.x`，真实 smoke test 已覆盖 `0.2.5` 和 `0.3.0`：
 
 - `ls`、`permit ls`、`send`、`stop` 与本地 `daemon status` 使用 JSON；
 - `logs` 在命令级没有 `--json`，全局 `--json`/`--format json` 仍返回文本；
-- activity parser 版本为 `paseo-0.2.x-activity-text-v2`，兼容旧 `---` 分隔和 0.2.5 的逐行 `[Kind] payload` 输出，并把 `No activity to display.` 作为有效空结果；
+- activity parser 版本为 `paseo-0.2.x-0.3.x-activity-text-v3`，兼容旧 `---` 分隔、0.2.5 和 0.3.0 的逐行 `[Kind] payload` 输出，并把 `No activity to display.` 作为有效空结果；
 - remote health 不使用不受支持的 `daemon status --host`。
 
 工具结果返回 `source_format`、`parser_version`、CLI version、missing fields 和 truncation。未知 activity 文本版本会返回 `PASEO_VERSION_UNSUPPORTED`，不会猜测字段。

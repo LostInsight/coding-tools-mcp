@@ -160,7 +160,7 @@ src-tauri/
 
 **问题**: 服务端升级后，既有 ChatGPT 连接仍可能使用旧的 tools/list 缓存。
 **选项**: 仅修改 `serverInfo.version`、虚假声明 `tools.listChanged=true`、实现可达通知通道、明确要求重新配置连接。
-**决策**: 当前版本使用第四种，并将 `listChanged` 设为 `false`。`serverInfo.version` 只用于服务身份展示，不是工具目录失效键；当前 `/mcp` POST 处理为单次 JSON 响应，没有可在升级后主动推送 `notifications/tools/list_changed` 的持久通道。页面提供连接器设置入口，要求用户重新配置连接并新开会话。未来只有在通知链路有协议级集成测试后才声明 `listChanged=true`。
+**决策**: `serverInfo.version` 只用于服务身份展示，不作为工具目录失效键。当前 `/mcp` 保留单次 JSON POST，并在 `Accept: text/event-stream` 的 GET 上提供持续通知通道；listener 启动或重连后发送 `notifications/tools/list_changed`，因此声明 `listChanged=true`。协议级测试必须验证通知可经真实 HTTP 连接到达；不支持 SSE 通知的客户端仍使用重新配置连接的兼容路径。
 
 ---
 

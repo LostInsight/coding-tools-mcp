@@ -91,7 +91,7 @@ impl<R: PaseoCommandRunner> PaseoCliClient<R> {
                 "Installed Paseo CLI version is not supported by this integration.",
                 false,
                 "version",
-                json!({"cli_version": bounded(&redact(&version), 40), "supported": "0.2.x"}),
+                json!({"cli_version": bounded(&redact(&version), 40), "supported": "0.2.x-0.3.x"}),
             ));
         }
         *self
@@ -350,7 +350,7 @@ fn parse_json_output(
 fn is_supported_version(version: &str) -> bool {
     let mut parts = version.split('.');
     matches!(parts.next(), Some("0"))
-        && matches!(parts.next(), Some("2"))
+        && matches!(parts.next(), Some("2" | "3"))
         && parts
             .next()
             .is_some_and(|patch| !patch.is_empty() && patch.chars().all(|ch| ch.is_ascii_digit()))
@@ -370,15 +370,36 @@ fn map_command_failure(
     host: Option<&str>,
 ) -> PaseoError {
     let stderr = redact(&output.stderr);
-    let lower = stderr.to_ascii_lowercase();
+    let lower = format!(
+        "{}\n{}",
+        stderr.to_ascii_lowercase(),
+        redact(&output.stdout).to_ascii_lowercase()
+    );
     let (code, message, retryable) =
         if lower.contains("unauthorized") || lower.contains("authentication") {
             ("PASEO_AUTH_FAILED", "Paseo authentication failed.", false)
+        } else if lower.contains("not found")
+            && (lower.contains("permission") || lower.contains("request"))
+        {
+            (
+                "PASEO_PERMISSION_NOT_FOUND",
+                "The Paseo permission request was not found.",
+                false,
+            )
         } else if lower.contains("not found") && lower.contains("agent") {
             ("PASEO_AGENT_NOT_FOUND", "Paseo agent was not found.", false)
         } else if lower.contains("connect")
             || lower.contains("daemon")
             || lower.contains("econnrefused")
+            || lower.contains("bad gateway")
+            || lower.contains("service unavailable")
+            || lower.contains("gateway timeout")
+            || lower.contains("http 502")
+            || lower.contains("http 503")
+            || lower.contains("http 504")
+            || lower.contains("status 502")
+            || lower.contains("status 503")
+            || lower.contains("status 504")
         {
             (
                 "PASEO_DAEMON_UNREACHABLE",
@@ -613,7 +634,41 @@ mod tests {
     fn supported_version_requires_a_numeric_patch_component() {
         assert!(is_supported_version("0.2.2"));
         assert!(is_supported_version("0.2.30"));
+        assert!(is_supported_version("0.3.0"));
+        assert!(is_supported_version("0.3.12"));
         assert!(!is_supported_version("0.2.secret"));
+        assert!(!is_supported_version("0.3.secret"));
         assert!(!is_supported_version("0.2.2.extra"));
+        assert!(!is_supported_version("0.4.0"));
+    }
+
+    #[test]
+    fn command_failures_have_specific_stable_codes() {
+        let failure = |stderr: &str| PaseoCommandOutput {
+            stdout: String::new(),
+            stderr: stderr.into(),
+            exit_code: Some(1),
+            duration_ms: 12,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+
+        assert_eq!(
+            map_command_failure(&failure("502 Bad Gateway"), "activity", None).code,
+            "PASEO_DAEMON_UNREACHABLE"
+        );
+        assert_eq!(
+            map_command_failure(
+                &failure("permission request req-1 not found"),
+                "allow_permission",
+                None,
+            )
+            .code,
+            "PASEO_PERMISSION_NOT_FOUND"
+        );
+        assert_eq!(
+            map_command_failure(&failure("agent agent-1 not found"), "activity", None).code,
+            "PASEO_AGENT_NOT_FOUND"
+        );
     }
 }

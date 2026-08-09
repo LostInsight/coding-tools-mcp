@@ -164,7 +164,7 @@ Existing files receive only additive wiring in workspace model, runtime construc
 
 **问题**: listener 上下文与 Actions OpenAPI 在启动时固定，协议声明不支持 list change notification。
 **选项**: 全局 watcher；只保存并要求手动重启；显式保存后重启当前工作区相关服务。
-**决策**: UI 保存成功后只重启当前工作区正在运行的 MCP/Actions，并显示客户端重连提示，不触碰其他工作区。
+**决策**: UI 保存成功后只重启当前工作区正在运行的 MCP/Actions，不触碰其他工作区。MCP listener 重启后通过 SSE 发送 `notifications/tools/list_changed`；不支持该通道的客户端显示重连提示。
 
 ### 决策 4: 监控证据不足时保持保守（关联需求: FR-7, FR-8）
 

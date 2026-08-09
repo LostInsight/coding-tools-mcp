@@ -17,12 +17,15 @@ pub fn should_prevent_exit() -> bool {
     UI_RECREATING.load(Ordering::SeqCst)
 }
 
+#[derive(Debug)]
 struct RecreateGuard;
 
 impl RecreateGuard {
-    fn enter() -> Self {
-        UI_RECREATING.store(true, Ordering::SeqCst);
-        Self
+    fn enter() -> AppResult<Self> {
+        UI_RECREATING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| AppError::Message("UI recreation is already in progress".into()))?;
+        Ok(Self)
     }
 }
 
@@ -91,7 +94,7 @@ pub fn get_webview_memory_sample() -> AppResult<WebviewMemorySample> {
 /// keepalive window first so "last window closed" never fires for the main UI.
 #[command]
 pub async fn recreate_ui_webview(app: AppHandle) -> AppResult<()> {
-    let _guard = RecreateGuard::enter();
+    let _guard = RecreateGuard::enter()?;
 
     // Drop any leftover keepalive from a previous failed attempt.
     if let Some(stale) = app.get_webview_window(KEEPALIVE_LABEL) {
@@ -203,7 +206,7 @@ pub async fn recreate_ui_webview(app: AppHandle) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sane_position, is_sane_size};
+    use super::{is_sane_position, is_sane_size, RecreateGuard};
     use tauri::{PhysicalPosition, PhysicalSize};
 
     #[test]
@@ -218,5 +221,14 @@ mod tests {
         assert!(!is_sane_size(&PhysicalSize::new(1, 1)));
         assert!(!is_sane_size(&PhysicalSize::new(20_000, 800)));
         assert!(is_sane_size(&PhysicalSize::new(1_280, 800)));
+    }
+
+    #[test]
+    fn concurrent_ui_recreation_is_rejected() {
+        let first = RecreateGuard::enter().expect("first recreation guard");
+        let second = RecreateGuard::enter().unwrap_err();
+        assert!(second.to_string().contains("already in progress"));
+        drop(first);
+        assert!(RecreateGuard::enter().is_ok());
     }
 }

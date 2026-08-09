@@ -43,7 +43,7 @@ fn initialize_result() -> Value {
     serde_json::json!({
         "protocolVersion": "2025-06-18",
         "capabilities": {
-            "tools": { "listChanged": false },
+            "tools": { "listChanged": true },
             "logging": {}
         },
         "serverInfo": {
@@ -167,10 +167,10 @@ mod tests {
     }
 
     #[test]
-    fn initialize_does_not_claim_tool_catalog_notifications_without_a_stream() {
+    fn initialize_advertises_reachable_tool_catalog_notifications() {
         let initialized = initialize_result();
 
-        assert_eq!(initialized["capabilities"]["tools"]["listChanged"], false);
+        assert_eq!(initialized["capabilities"]["tools"]["listChanged"], true);
     }
 
     #[test]

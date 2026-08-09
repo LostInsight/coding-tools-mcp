@@ -1,13 +1,19 @@
+use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Form, Query, Request, State};
-use axum::http::{header::CACHE_CONTROL, HeaderMap, StatusCode};
+use axum::http::{
+    header::{ACCEPT, CACHE_CONTROL},
+    HeaderMap, HeaderValue, StatusCode,
+};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
@@ -133,7 +139,7 @@ async fn serve(
     let profile_id = state.workspace_id.clone();
     let access_log_workspace_id = profile_id.clone();
     let app = Router::new()
-        .route("/mcp", get(mcp_discovery).post(mcp_post))
+        .route("/mcp", get(mcp_get).post(mcp_post))
         .route(
             "/.well-known/oauth-authorization-server",
             get(oauth_authorization_server_metadata),
@@ -201,6 +207,60 @@ async fn mcp_discovery() -> Response {
     ([(CACHE_CONTROL, "no-store")], Json(mcp_discovery_payload())).into_response()
 }
 
+async fn mcp_get(headers: HeaderMap) -> Response {
+    if !accepts_event_stream(&headers) {
+        return mcp_discovery().await;
+    }
+
+    let events = stream::once(async {
+        Ok::<Event, Infallible>(
+            Event::default()
+                .event("message")
+                .data(tool_list_changed_notification().to_string()),
+        )
+    })
+    .chain(stream::pending::<Result<Event, Infallible>>());
+    let mut response = Sse::new(events)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-transform"),
+    );
+    response
+}
+
+fn accepts_event_stream(headers: &HeaderMap) -> bool {
+    headers.get_all(ACCEPT).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value.split(',').any(|media_type| {
+                media_type
+                    .split(';')
+                    .next()
+                    .is_some_and(|value| value.trim().eq_ignore_ascii_case("text/event-stream"))
+            })
+        })
+    })
+}
+
+fn tool_list_changed_notification() -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/tools/list_changed"
+    })
+}
+
+fn prevent_response_caching(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 fn mcp_discovery_payload() -> Value {
     json!({
         "name": "coding-tools-mcp",
@@ -219,7 +279,7 @@ async fn mcp_post(
     Json(body): Json<Value>,
 ) -> Response {
     if let Some(response) = require_mcp_auth(&state, &headers) {
-        return response;
+        return prevent_response_caching(response);
     }
     let method = body
         .get("method")
@@ -245,7 +305,7 @@ async fn mcp_post(
     let mcp = state.mcp.clone();
     let profile_id = state.workspace_id.clone();
     let result = tokio::task::spawn_blocking(move || handle_request(&mcp, &body)).await;
-    match result {
+    let response = match result {
         Ok(response) => {
             append_profile_log(
                 &profile_id,
@@ -309,7 +369,8 @@ async fn mcp_post(
             }))
             .into_response()
         }
-    }
+    };
+    prevent_response_caching(response)
 }
 
 fn require_mcp_auth(state: &ListenerState, headers: &HeaderMap) -> Option<Response> {
@@ -406,11 +467,15 @@ fn oauth_not_configured() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use axum::{middleware, routing::get, Router};
-    use axum::http::header::CACHE_CONTROL;
+    use axum::http::header::{ACCEPT, CACHE_CONTROL, CONTENT_TYPE};
+    use axum::http::{HeaderMap, HeaderValue};
     use axum::response::IntoResponse;
+    use axum::{middleware, routing::get, Router};
 
-    use super::{bind_listener, log_mcp_access, mcp_discovery, mcp_discovery_payload};
+    use super::{
+        bind_listener, log_mcp_access, mcp_discovery, mcp_discovery_payload, mcp_get,
+        tool_list_changed_notification,
+    };
     use crate::tunnel::log_dir_for_profile;
 
     #[test]
@@ -433,6 +498,58 @@ mod tests {
         let response = mcp_discovery().await.into_response();
 
         assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
+    }
+
+    #[test]
+    fn tool_catalog_notification_uses_the_mcp_method_name() {
+        let notification = tool_list_changed_notification();
+
+        assert_eq!(notification["jsonrpc"], "2.0");
+        assert_eq!(notification["method"], "notifications/tools/list_changed");
+        assert!(notification.get("id").is_none());
+    }
+
+    #[tokio::test]
+    async fn event_stream_get_exposes_a_reachable_notification_channel() {
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        let response = mcp_get(headers).await;
+
+        assert!(response.headers()[CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream"));
+        assert_eq!(response.headers()[CACHE_CONTROL], "no-cache, no-transform");
+    }
+
+    #[tokio::test]
+    async fn event_stream_delivers_tool_catalog_notification_over_http() {
+        let app = Router::new().route("/mcp", get(mcp_get));
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("test listener address");
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut response = reqwest::Client::new()
+            .get(format!("http://{addr}/mcp"))
+            .header(ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("open event stream");
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(2), response.chunk())
+            .await
+            .expect("event stream timeout")
+            .expect("read event stream")
+            .expect("first event stream chunk");
+
+        task.abort();
+        let _ = task.await;
+
+        let event = String::from_utf8_lossy(&chunk);
+        assert!(event.contains("notifications/tools/list_changed"));
     }
 
     #[tokio::test]

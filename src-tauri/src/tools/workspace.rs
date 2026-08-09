@@ -741,6 +741,40 @@ pub fn wrap_mcp_tool_result(tool_name: &str, args: &Value, structured: Value) ->
 }
 
 #[cfg(test)]
+mod mcp_result_tests {
+    use super::wrap_mcp_tool_result;
+    use serde_json::json;
+
+    #[test]
+    fn mcp_wrapper_preserves_specific_paseo_error_codes() {
+        let wrapped = wrap_mcp_tool_result(
+            "paseo_get_agent_activity",
+            &json!({"agent_id": "agent-1"}),
+            json!({
+                "ok": false,
+                "error": {
+                    "code": "PASEO_DAEMON_UNREACHABLE",
+                    "message": "daemon unavailable",
+                    "category": "paseo",
+                    "retryable": true,
+                    "details": {"stage": "activity"}
+                }
+            }),
+        );
+
+        assert_eq!(wrapped["isError"], true);
+        assert_eq!(
+            wrapped["structuredContent"]["error"]["code"],
+            "PASEO_DAEMON_UNREACHABLE"
+        );
+        assert!(wrapped["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("PASEO_DAEMON_UNREACHABLE"));
+    }
+}
+
+#[cfg(test)]
 mod filesystem_policy_tests {
     use super::*;
     use crate::workspace::FilesystemPolicyConfig;
