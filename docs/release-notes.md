@@ -4,6 +4,22 @@
 
 - No changes yet.
 
+## 0.1.36 - 2026-08-09
+
+### Desktop Stability
+
+- Changed the tray reload action to recreate the WebView2 window from Rust, with concurrent recreation protection, instead of evaluating a reload script in an already-frozen renderer.
+
+### MCP Catalog
+
+- Added a real `text/event-stream` channel for `notifications/tools/list_changed`, retained JSON discovery for ordinary GET clients, and disabled caching on MCP responses.
+- Paseo configuration saves still restart only the active workspace services; notification-aware clients now refresh their catalog automatically, while other clients receive an explicit reconnect hint.
+
+### Paseo
+
+- Added specific daemon, CLI timeout, partial parse, unknown activity, missing permission and missing agent classifications with bounded diagnostics and actionable recovery steps.
+- Preserved recognized events when activity output is partially parseable, added 0.2.5 text/JSON regression fixtures, and verified the same guarded text format against Paseo 0.3.0.
+
 ## 0.1.35 - 2026-08-07
 
 ### Release Integrity
