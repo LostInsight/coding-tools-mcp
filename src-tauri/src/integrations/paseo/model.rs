@@ -173,11 +173,14 @@ pub struct PaseoAgent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityEvent {
+    pub kind: String,
     pub event_type: String,
     pub occurred_at: Option<String>,
     pub summary: String,
+    pub known: bool,
     pub is_progress: bool,
     pub is_waiting: bool,
+    pub requires_user_action: bool,
     pub error_signature: Option<String>,
 }
 
@@ -185,15 +188,34 @@ pub struct ActivityEvent {
 pub struct PermissionSummary {
     pub request_id: Option<String>,
     pub agent_id: Option<String>,
+    pub tool: Option<String>,
     pub permission_type: String,
     pub requested_at: Option<String>,
     pub summary: String,
+    pub control_safe: bool,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PaseoCapabilities {
+    pub list_agents: bool,
+    pub activity: bool,
+    pub permissions: bool,
+    pub permission_details: bool,
+    pub send_prompt: bool,
+    pub stop_agent: bool,
+    pub allow_permission: bool,
+    pub deny_permission: bool,
+    pub create_agent: bool,
+    pub json_output: bool,
+    pub warnings: Vec<Value>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PaseoCommandSpec {
     pub program: PathBuf,
     pub args: Vec<String>,
+    pub environment: Vec<(String, String)>,
     pub timeout_ms: u64,
     pub max_output_bytes: usize,
 }
@@ -288,6 +310,10 @@ pub struct StoredAgentState {
     pub activity_fingerprint: String,
     pub last_effective_progress_at: Option<String>,
     pub observed_at: String,
+    #[serde(default)]
+    pub degraded: bool,
+    #[serde(default)]
+    pub warnings: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

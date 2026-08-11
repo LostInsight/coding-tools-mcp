@@ -110,6 +110,8 @@ pub fn stored_state(
         activity_fingerprint: activity_fingerprint(agent, events),
         last_effective_progress_at: diagnosis.last_effective_progress_at.clone(),
         observed_at: now_rfc3339(),
+        degraded: false,
+        warnings: Vec::new(),
     }
 }
 

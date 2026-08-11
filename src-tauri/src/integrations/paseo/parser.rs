@@ -1,12 +1,12 @@
 use serde_json::Value;
 
-use super::model::{
-    ActivityEvent, ParsedPaseo, PaseoAgent, PaseoAgentStatus, PaseoError, PermissionSummary,
-};
+#[cfg(test)]
+use super::compat::parse_permission_listing as parse_permissions;
+use super::model::{ActivityEvent, ParsedPaseo, PaseoAgent, PaseoAgentStatus, PaseoError};
 use super::redaction::{bounded, normalize_error_signature, redact};
 
 pub const JSON_PARSER_VERSION: &str = "paseo-json-v1";
-pub const TEXT_PARSER_VERSION: &str = "paseo-0.2.x-0.3.x-activity-text-v3";
+pub const TEXT_PARSER_VERSION: &str = "paseo-activity-text-v4";
 
 pub fn parse_agents(
     raw: &str,
@@ -73,74 +73,13 @@ pub fn parse_agents(
     })
 }
 
-fn is_supported_activity_text_version(version: &str) -> bool {
-    let mut parts = version.trim_start_matches('v').split('.');
-    matches!(parts.next(), Some("0"))
-        && matches!(parts.next(), Some("2" | "3"))
-        && parts
-            .next()
-            .is_some_and(|patch| !patch.is_empty() && patch.chars().all(|ch| ch.is_ascii_digit()))
-        && parts.next().is_none()
-}
-
-pub fn parse_permissions(
-    raw: &str,
-    truncated: bool,
-) -> Result<ParsedPaseo<Vec<PermissionSummary>>, PaseoError> {
-    let root: Value = parse_json(raw, truncated)?;
-    let items = root
-        .as_array()
-        .or_else(|| root.get("permissions").and_then(Value::as_array))
-        .ok_or_else(|| parse_error("Permission response must contain an array", truncated))?;
-    let mut permissions = Vec::with_capacity(items.len());
-    let mut missing_fields = Vec::new();
-    for item in items {
-        let permission_type = string_at(item, &["type", "permissionType", "permission"])
-            .unwrap_or_else(|| "unknown".into());
-        let requested_at = string_at(item, &["requestedAt", "createdAt", "created"]);
-        if requested_at.is_none() && !missing_fields.contains(&"requested_at".to_string()) {
-            missing_fields.push("requested_at".into());
-        }
-        let summary = string_at(item, &["summary", "description", "command", "request"])
-            .unwrap_or_else(|| permission_type.clone());
-        let request_id = safe_string_at(item, &["requestId", "request_id", "id"], 128);
-        if request_id.is_none() && !missing_fields.contains(&"request_id".to_string()) {
-            missing_fields.push("request_id".into());
-        }
-        permissions.push(PermissionSummary {
-            request_id,
-            agent_id: safe_string_at(item, &["agentId", "agent_id", "agent"], 128),
-            permission_type: bounded(&redact(&permission_type), 120),
-            requested_at,
-            summary: bounded(&redact(&summary), 500),
-        });
-    }
-    Ok(ParsedPaseo {
-        data: permissions,
-        source_format: "json",
-        parser_version: JSON_PARSER_VERSION,
-        missing_fields,
-        warnings: Vec::new(),
-        truncated,
-    })
-}
-
 pub fn parse_activity(
     raw: &str,
-    cli_version: &str,
+    _cli_version: &str,
     truncated: bool,
 ) -> Result<ParsedPaseo<Vec<ActivityEvent>>, PaseoError> {
     if let Ok(root) = serde_json::from_str::<Value>(raw) {
         return parse_activity_json(&root, truncated);
-    }
-    if !is_supported_activity_text_version(cli_version) {
-        return Err(PaseoError::new(
-            "PASEO_VERSION_UNSUPPORTED",
-            "This Paseo CLI activity text format is not supported; install a 0.2.x or 0.3.x release, or update the integration parser.",
-            false,
-            "parse_activity",
-            serde_json::json!({"cli_version": cli_version, "supported": "0.2.x-0.3.x"}),
-        ));
     }
     parse_activity_text(raw, truncated)
 }
@@ -156,7 +95,13 @@ fn parse_activity_json(
         .or_else(|| root.get("entries").and_then(Value::as_array))
         .or_else(|| root.get("logs").and_then(Value::as_array))
         .or_else(|| root.get("data").and_then(Value::as_array))
-        .ok_or_else(|| unknown_activity("Activity JSON does not contain a known event array", truncated, 0))?;
+        .ok_or_else(|| {
+            unknown_activity(
+                "Activity JSON does not contain a known event array",
+                truncated,
+                0,
+            )
+        })?;
     let mut events = Vec::with_capacity(items.len());
     let mut skipped_records = 0_usize;
     let mut missing_fields = Vec::new();
@@ -336,48 +281,65 @@ fn unknown_activity(message: &str, truncated: bool, skipped_records: usize) -> P
 }
 
 fn normalized_event(
-    event_type: &str,
+    raw_kind: &str,
     raw_summary: &str,
     occurred_at: Option<String>,
 ) -> ActivityEvent {
-    let event_type = normalize_event_type(event_type);
+    let kind = bounded(&redact(raw_kind.trim()), 64);
+    let mapping = normalize_event_kind(&kind);
+    let event_type = mapping.event_type;
     let raw_lower = raw_summary.to_ascii_lowercase();
     let lower = format!("{} {}", event_type, raw_lower);
-    let is_error = event_type == "errors"
-        || ["error", "failed", "panic", "exception"]
+    let is_reasoning = event_type == "reasoning_signal";
+    let is_error = !is_reasoning
+        && (event_type == "errors"
+            || ["error", "failed", "panic", "exception"]
+                .iter()
+                .any(|needle| lower.contains(needle)));
+    let is_waiting = !is_reasoning
+        && (mapping.requires_user_action
+            || [
+                "waiting for user",
+                "awaiting input",
+                "permission",
+                "needs approval",
+            ]
             .iter()
-            .any(|needle| lower.contains(needle));
-    let is_waiting = [
-        "waiting for user",
-        "awaiting input",
-        "permission",
-        "needs approval",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle));
+            .any(|needle| lower.contains(needle)));
     let error_signature = is_error.then(|| normalize_error_signature(raw_summary));
     let summary = safe_activity_summary(
+        &kind,
         event_type,
         &raw_lower,
         is_waiting,
         error_signature.as_deref(),
     );
     ActivityEvent {
+        kind,
         event_type: event_type.to_string(),
         occurred_at,
         summary: summary.clone(),
+        known: mapping.known,
         is_progress: !summary.is_empty() && !is_error && !is_waiting,
         is_waiting,
+        requires_user_action: is_waiting,
         error_signature,
     }
 }
 
 fn safe_activity_summary(
+    kind: &str,
     event_type: &str,
     raw_lower: &str,
     is_waiting: bool,
     error_signature: Option<&str>,
 ) -> String {
+    if kind.eq_ignore_ascii_case("thought") {
+        return "internal reasoning activity observed".into();
+    }
+    if event_type == "generic" {
+        return format!("generic activity observed: {}", bounded(&redact(kind), 64));
+    }
     if event_type == "errors" {
         return format!(
             "error activity observed: {}",
@@ -423,20 +385,45 @@ fn safe_activity_summary(
     "message activity observed".into()
 }
 
-fn normalize_event_type(value: &str) -> &'static str {
-    let value = value.to_ascii_lowercase();
-    if value.contains("error") || value.contains("fail") {
+struct ActivityKindMapping {
+    event_type: &'static str,
+    known: bool,
+    requires_user_action: bool,
+}
+
+fn normalize_event_kind(value: &str) -> ActivityKindMapping {
+    let compact = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let event_type = if compact.contains("error") || compact.contains("fail") {
         "errors"
-    } else if value.contains("tool")
-        || value.contains("command")
-        || value.contains("shell")
-        || value.contains("edit")
+    } else if ["shell", "edit", "write", "read", "tool", "command"]
+        .iter()
+        .any(|prefix| compact.starts_with(prefix))
     {
         "tools"
-    } else if value.contains("permission") {
+    } else if compact.contains("permission") {
         "permissions"
-    } else {
+    } else if compact == "askuserquestion" {
+        "waiting_for_user"
+    } else if compact == "thought" {
+        "reasoning_signal"
+    } else if compact == "tasknotification" {
         "messages"
+    } else if matches!(
+        compact.as_str(),
+        "user" | "assistant" | "system" | "message"
+    ) {
+        "messages"
+    } else {
+        "generic"
+    };
+    ActivityKindMapping {
+        event_type,
+        known: event_type != "generic",
+        requires_user_action: compact == "askuserquestion",
     }
 }
 
@@ -514,8 +501,7 @@ fn labels_at(value: &Value) -> Vec<String> {
 fn text_event_pattern() -> &'static regex::Regex {
     static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     PATTERN.get_or_init(|| {
-        regex::Regex::new(r"(?s)^\[([A-Za-z0-9_-]{1,32})\]\s*(.*)$")
-            .expect("activity text regex")
+        regex::Regex::new(r"(?s)^\[([^\]\r\n]{1,64})\]\s*(.*)$").expect("activity text regex")
     })
 }
 
@@ -589,13 +575,10 @@ mod tests {
     }
 
     #[test]
-    fn text_activity_requires_a_supported_minor_version_and_known_shape() {
+    fn text_activity_uses_shape_not_minor_version_and_rejects_unstructured_text() {
         let fixture = include_str!("../../../tests/fixtures/paseo/activity-v0.2.2.txt");
         assert!(parse_activity(fixture, "0.2.3", false).is_ok());
-        assert_eq!(
-            parse_activity(fixture, "0.4.0", false).unwrap_err().code,
-            "PASEO_VERSION_UNSUPPORTED"
-        );
+        assert!(parse_activity(fixture, "0.4.0", false).is_ok());
         assert_eq!(
             parse_activity("unstructured output", "0.2.2", false)
                 .unwrap_err()
@@ -654,13 +637,77 @@ mod tests {
     }
 
     #[test]
+    fn parses_v02_permission_request_ids_without_truncation() {
+        let fixture = include_str!("../../../tests/fixtures/paseo/permissions-v0.2.x.json");
+        let parsed = parse_permissions(fixture, false).unwrap();
+        assert_eq!(
+            parsed.data[0].request_id.as_deref(),
+            Some("permission-legacy-full-id")
+        );
+        assert_eq!(
+            parsed.data[0].agent_id.as_deref(),
+            Some("agent-legacy-full-id")
+        );
+    }
+
+    #[test]
+    fn v031_lossy_table_projection_is_not_treated_as_a_control_id() {
+        let fixture = include_str!("../../../tests/fixtures/paseo/permissions-v0.3.1-list.json");
+        let parsed = parse_permissions(fixture, false).unwrap();
+        assert_eq!(parsed.data.len(), 1);
+        assert_eq!(parsed.data[0].request_id, None);
+        assert_eq!(parsed.data[0].permission_type, "Write");
+        assert_eq!(
+            parsed.warnings[0]["code"],
+            "PASEO_PERMISSION_SCHEMA_UNSUPPORTED"
+        );
+    }
+
+    #[test]
     fn permission_request_ids_are_preserved() {
         let parsed = parse_permissions(
-            r#"[{"id":"req-123","agentId":"agent-1","type":"shell","summary":"cargo test"}]"#,
+            r#"[{"requestId":"req-123","agentId":"agent-1","type":"shell","summary":"cargo test"}]"#,
             false,
         )
         .unwrap();
         assert_eq!(parsed.data[0].request_id.as_deref(), Some("req-123"));
         assert!(!parsed.missing_fields.contains(&"request_id".into()));
+    }
+
+    #[test]
+    fn v031_activity_kinds_are_unknown_safe_and_reasoning_safe() {
+        let fixture = include_str!("../../../tests/fixtures/paseo/activity-v0.3.1.txt");
+        let parsed = parse_activity(fixture, "0.3.1", false).unwrap();
+        assert_eq!(parsed.data.len(), 8);
+        assert!(parsed.data.iter().any(|event| event.is_waiting));
+        assert!(parsed
+            .data
+            .iter()
+            .all(|event| !event.summary.contains("private chain-of-thought")));
+
+        let reasoning = parse_activity(
+            "[Thought] secret reasoning says error and waiting for user approval",
+            "0.3.1",
+            false,
+        )
+        .unwrap();
+        let event = &reasoning.data[0];
+        assert_eq!(event.summary, "internal reasoning activity observed");
+        assert!(!event.is_waiting);
+        assert!(!event.requires_user_action);
+        assert!(event.error_signature.is_none());
+    }
+
+    #[test]
+    fn activity_tail_sizes_remain_compatible_with_unknown_kinds() {
+        let fixture = include_str!("../../../tests/fixtures/paseo/activity-v0.3.1.txt");
+        let repeated = std::iter::repeat_n(fixture.trim(), 13)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for tail in [20_usize, 30, 100] {
+            let lines = repeated.lines().take(tail).collect::<Vec<_>>().join("\n");
+            let parsed = parse_activity(&lines, "0.3.1", false).unwrap();
+            assert_eq!(parsed.data.len(), tail);
+        }
     }
 }

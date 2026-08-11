@@ -1,0 +1,15 @@
+{
+  "Id": "37c6d4c7-8092-4939-8ef4-178b63879ca2",
+  "Name": "Paseo permission compatibility probe",
+  "Status": "running",
+  "Mode": "default",
+  "PendingPermissions": [
+    {
+      "id": "permission-174b288d-cc76-499e-bf68-9fb7b968f4e9",
+      "tool": "Write",
+      "futureOptionalField": {
+        "ignored": true
+      }
+    }
+  ]
+}

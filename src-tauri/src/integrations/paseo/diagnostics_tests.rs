@@ -18,11 +18,14 @@ fn agent(status: PaseoAgentStatus) -> PaseoAgent {
 
 fn event(kind: &str, summary: &str, error: Option<&str>) -> ActivityEvent {
     ActivityEvent {
+        kind: kind.into(),
         event_type: kind.into(),
         occurred_at: None,
         summary: summary.into(),
+        known: true,
         is_progress: error.is_none(),
         is_waiting: false,
+        requires_user_action: false,
         error_signature: error.map(str::to_string),
     }
 }
@@ -97,9 +100,12 @@ fn pending_permission_has_priority() {
     let permission = PermissionSummary {
         request_id: Some("req-1".into()),
         agent_id: Some("agent-1".into()),
+        tool: Some("shell".into()),
         permission_type: "shell".into(),
         requested_at: None,
         summary: "bounded".into(),
+        control_safe: true,
+        source: "test".into(),
     };
     assert_eq!(
         classify(PaseoAgentStatus::Running, &[], &[permission]),
@@ -165,6 +171,8 @@ fn external_wait_requires_output_growth_across_observations() {
         activity_fingerprint: "older-output".into(),
         last_effective_progress_at: Some("2020-01-01T00:00:00Z".into()),
         observed_at: "2020-01-01T00:00:00Z".into(),
+        degraded: false,
+        warnings: Vec::new(),
     };
     let result = diagnose(DiagnosticInput {
         agent: &agent,
@@ -191,6 +199,8 @@ fn unchanged_activity_after_threshold_is_stalled() {
         activity_fingerprint: activity_fingerprint(&agent, &events),
         last_effective_progress_at: Some("2020-01-01T00:00:00Z".into()),
         observed_at: "2020-01-01T00:00:00Z".into(),
+        degraded: false,
+        warnings: Vec::new(),
     };
     let result = diagnose(DiagnosticInput {
         agent: &agent,

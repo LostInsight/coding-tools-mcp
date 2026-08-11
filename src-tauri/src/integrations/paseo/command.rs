@@ -44,6 +44,7 @@ impl PaseoCommandRunner for SystemPaseoCommandRunner {
             .stderr(Stdio::piped())
             .env_clear();
         apply_minimal_environment(&mut command);
+        command.envs(spec.environment.iter().cloned());
 
         #[cfg(windows)]
         command.creation_flags(0x0800_0000);
@@ -195,6 +196,7 @@ mod tests {
         let spec = PaseoCommandSpec {
             program: copied,
             args: vec!["where".into()],
+            environment: Vec::new(),
             timeout_ms: 5_000,
             max_output_bytes: 4_096,
         };
@@ -222,6 +224,7 @@ mod tests {
             .run(&PaseoCommandSpec {
                 program: launcher,
                 args: vec!["--version".into()],
+                environment: Vec::new(),
                 timeout_ms: 1_000,
                 max_output_bytes: 1_024,
             })
@@ -241,6 +244,7 @@ mod tests {
             .run(&PaseoCommandSpec {
                 program,
                 args,
+                environment: Vec::new(),
                 timeout_ms: 500,
                 max_output_bytes: 1_024,
             })

@@ -3,6 +3,7 @@ mod binary;
 pub mod cli;
 pub mod client;
 pub mod command;
+pub mod compat;
 pub mod config;
 pub mod diagnostics;
 pub mod model;
@@ -14,6 +15,9 @@ pub mod policy;
 pub mod redaction;
 pub mod schema;
 pub mod tools;
+
+#[cfg(test)]
+mod live_tests;
 
 pub use config::{PaseoIntegrationConfig, WorkspaceIntegrations};
 pub use model::{

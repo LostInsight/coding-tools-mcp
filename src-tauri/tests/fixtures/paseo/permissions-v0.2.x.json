@@ -1,0 +1,8 @@
+[
+  {
+    "requestId": "permission-legacy-full-id",
+    "agentId": "agent-legacy-full-id",
+    "type": "Write",
+    "summary": "write a bounded test file"
+  }
+]

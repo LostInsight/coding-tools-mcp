@@ -362,6 +362,8 @@ mod tests {
             activity_fingerprint: "x".into(),
             last_effective_progress_at: None,
             observed_at: "2026-01-01T00:00:00Z".into(),
+            degraded: false,
+            warnings: Vec::new(),
         };
         let previous = StoredMonitorSnapshot {
             snapshot_id: "1".into(),
@@ -388,6 +390,8 @@ mod tests {
             activity_fingerprint: "x".into(),
             last_effective_progress_at: None,
             observed_at: "2026-01-01T00:00:00Z".into(),
+            degraded: false,
+            warnings: Vec::new(),
         };
         let previous = StoredMonitorSnapshot {
             snapshot_id: "1".into(),
@@ -415,6 +419,8 @@ mod tests {
             activity_fingerprint: "x".into(),
             last_effective_progress_at: None,
             observed_at: "2026-01-01T00:00:00Z".into(),
+            degraded: false,
+            warnings: Vec::new(),
         };
         let previous = StoredMonitorSnapshot {
             snapshot_id: "1".into(),
@@ -472,6 +478,8 @@ mod tests {
             activity_fingerprint: "fingerprint".into(),
             last_effective_progress_at: Some("2026-01-01T00:00:00Z".into()),
             observed_at: "2026-01-01T00:00:00Z".into(),
+            degraded: false,
+            warnings: Vec::new(),
         };
         let diagnosis = lightweight_diagnosis(&agent, Some(&previous), "2026-01-01T00:05:00Z");
         assert_eq!(
@@ -497,9 +505,12 @@ mod tests {
         let permission = PermissionSummary {
             request_id: Some("req-1".into()),
             agent_id: None,
+            tool: None,
             permission_type: "unknown".into(),
             requested_at: None,
             summary: "permission activity observed".into(),
+            control_safe: false,
+            source: "test".into(),
         };
         assert!(detailed_check(&agent, None, &[permission], 45));
     }

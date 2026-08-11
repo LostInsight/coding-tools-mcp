@@ -3,11 +3,15 @@ use serde_json::{json, Value};
 use super::binary::resolve_binary;
 use super::client::PaseoClient;
 use super::command::{PaseoCommandRunner, SystemPaseoCommandRunner};
-use super::model::{
-    ActivityEvent, ParsedPaseo, PaseoAgent, PaseoCommandOutput, PaseoCommandSpec,
-    PaseoDaemonStatus, PaseoError, PaseoRuntimeContext, PermissionSummary,
+use super::compat::{
+    parse_inspected_permissions, parse_permission_listing, permission_warning,
+    replace_agent_permissions,
 };
-use super::parser::{parse_activity, parse_agents, parse_permissions};
+use super::model::{
+    ActivityEvent, ParsedPaseo, PaseoAgent, PaseoCapabilities, PaseoCommandOutput,
+    PaseoCommandSpec, PaseoDaemonStatus, PaseoError, PaseoRuntimeContext, PermissionSummary,
+};
+use super::parser::{parse_activity, parse_agents};
 use super::policy::validate_host;
 use super::redaction::{bounded, redact, redact_host};
 
@@ -44,10 +48,13 @@ impl<R: PaseoCommandRunner> PaseoCliClient<R> {
             ));
         }
         validate_host(self.context.host.as_deref())?;
-        let program = resolve_binary(&self.context.config.binary_path)?;
+        let launch = resolve_binary(&self.context.config.binary_path)?;
+        let mut launch_args = launch.args;
+        launch_args.extend(args);
         let output = self.runner.run(&PaseoCommandSpec {
-            program,
-            args,
+            program: launch.program,
+            args: launch_args,
+            environment: launch.environment,
             timeout_ms: self.context.config.command_timeout_ms,
             max_output_bytes: max_bytes
                 .unwrap_or(self.context.config.max_output_bytes)
@@ -85,13 +92,13 @@ impl<R: PaseoCommandRunner> PaseoCliClient<R> {
         let output = self.run(vec!["--version".into()], "version", Some(4_096))?;
         ensure_complete_stdout(&output, "version")?;
         let version = output.stdout.trim().trim_start_matches('v').to_string();
-        if version.len() > 40 || !is_supported_version(&version) {
+        if !is_observable_version(&version) {
             return Err(PaseoError::new(
                 "PASEO_VERSION_UNSUPPORTED",
-                "Installed Paseo CLI version is not supported by this integration.",
+                "Installed Paseo CLI returned an unreadable version string.",
                 false,
                 "version",
-                json!({"cli_version": bounded(&redact(&version), 40), "supported": "0.2.x-0.3.x"}),
+                json!({"cli_version": bounded(&redact(&version), 40)}),
             ));
         }
         *self
@@ -123,16 +130,24 @@ impl<R: PaseoCommandRunner> PaseoClient for PaseoCliClient<R> {
                 raw_status: None,
             });
         }
-        let output = self.run(
-            vec![
-                "--no-color".into(),
-                "daemon".into(),
-                "status".into(),
-                "--json".into(),
-            ],
-            "connect",
-            Some(65_536),
-        )?;
+        let output = self
+            .run(
+                vec!["--no-color".into(), "status".into(), "--json".into()],
+                "connect",
+                Some(65_536),
+            )
+            .or_else(|_| {
+                self.run(
+                    vec![
+                        "--no-color".into(),
+                        "daemon".into(),
+                        "status".into(),
+                        "--json".into(),
+                    ],
+                    "connect",
+                    Some(65_536),
+                )
+            })?;
         let value = parse_json_output(&output, "connect", "Paseo daemon status")?;
         let reachable = value
             .get("connectedDaemon")
@@ -158,6 +173,79 @@ impl<R: PaseoCommandRunner> PaseoClient for PaseoCliClient<R> {
                 .and_then(Value::as_str)
                 .map(|value| bounded(&redact(value), 120)),
         })
+    }
+
+    fn detect_capabilities(&self) -> Result<PaseoCapabilities, PaseoError> {
+        let _ = self.checked_version()?;
+        let mut capabilities = PaseoCapabilities::default();
+
+        let mut list_args = vec![
+            "--no-color".into(),
+            "ls".into(),
+            "-a".into(),
+            "-g".into(),
+            "--json".into(),
+        ];
+        list_args.extend(self.host_args());
+        match self.run(list_args, "capability_list_agents", Some(65_536)) {
+            Ok(output) => {
+                capabilities.list_agents =
+                    parse_agents(&output.stdout, output.stdout_truncated).is_ok();
+            }
+            Err(error) => capabilities
+                .warnings
+                .push(capability_warning("list_agents", &error)),
+        }
+
+        let mut permission_args = vec![
+            "--no-color".into(),
+            "permit".into(),
+            "ls".into(),
+            "--json".into(),
+        ];
+        permission_args.extend(self.host_args());
+        match self.run(permission_args, "capability_permissions", Some(65_536)) {
+            Ok(output) => {
+                capabilities.permissions =
+                    parse_permission_listing(&output.stdout, output.stdout_truncated).is_ok();
+            }
+            Err(error) => capabilities
+                .warnings
+                .push(capability_warning("permissions", &error)),
+        }
+        capabilities.json_output = capabilities.list_agents && capabilities.permissions;
+
+        match self.run(
+            vec!["--no-color".into(), "--help".into()],
+            "capability_commands",
+            Some(65_536),
+        ) {
+            Ok(output) => {
+                capabilities.activity = help_has_command(&output.stdout, "logs");
+                capabilities.permission_details = help_has_command(&output.stdout, "inspect");
+                capabilities.send_prompt = help_has_command(&output.stdout, "send");
+                capabilities.stop_agent = help_has_command(&output.stdout, "stop");
+                capabilities.create_agent = help_has_command(&output.stdout, "run");
+            }
+            Err(error) => capabilities
+                .warnings
+                .push(capability_warning("command_surface", &error)),
+        }
+
+        match self.run(
+            vec!["--no-color".into(), "permit".into(), "--help".into()],
+            "capability_permission_control",
+            Some(16_384),
+        ) {
+            Ok(output) => {
+                capabilities.allow_permission = help_has_command(&output.stdout, "allow");
+                capabilities.deny_permission = help_has_command(&output.stdout, "deny");
+            }
+            Err(error) => capabilities
+                .warnings
+                .push(capability_warning("permission_control", &error)),
+        }
+        Ok(capabilities)
     }
 
     fn list_agents(&self) -> Result<ParsedPaseo<Vec<PaseoAgent>>, PaseoError> {
@@ -213,7 +301,31 @@ impl<R: PaseoCommandRunner> PaseoClient for PaseoCliClient<R> {
         ];
         args.extend(self.host_args());
         let output = self.run(args, "permissions", None)?;
-        parse_permissions(&output.stdout, output.stdout_truncated)
+        let mut parsed = parse_permission_listing(&output.stdout, output.stdout_truncated)?;
+        let agent_ids = parsed
+            .data
+            .iter()
+            .filter(|permission| !permission.control_safe)
+            .filter_map(|permission| permission.agent_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        for agent_id in agent_ids {
+            let mut inspect_args = vec![
+                "--no-color".into(),
+                "inspect".into(),
+                agent_id.clone(),
+                "--json".into(),
+            ];
+            inspect_args.extend(self.host_args());
+            match self
+                .run(inspect_args, "permission_details", None)
+                .and_then(|output| {
+                    parse_inspected_permissions(&output.stdout, &agent_id, output.stdout_truncated)
+                }) {
+                Ok(inspected) => replace_agent_permissions(&mut parsed, &agent_id, inspected),
+                Err(error) => parsed.warnings.push(permission_warning(&error, &agent_id)),
+            }
+        }
+        Ok(parsed)
     }
 
     fn send_prompt(&self, agent_id: &str, prompt: &str) -> Result<Value, PaseoError> {
@@ -295,17 +407,34 @@ impl<R: PaseoCommandRunner> PaseoClient for PaseoCliClient<R> {
         cwd: &str,
     ) -> Result<Value, PaseoError> {
         let _ = self.checked_version()?;
+        let mut workspace_args = vec![
+            "--no-color".into(),
+            "workspace".into(),
+            "ls".into(),
+            "--json".into(),
+        ];
+        workspace_args.extend(self.host_args());
+        let workspace_id = self
+            .run(workspace_args, "list_workspaces", Some(65_536))
+            .ok()
+            .and_then(|output| exact_workspace_for_cwd(&output.stdout, cwd));
         let mut args = vec![
             "--no-color".into(),
             "run".into(),
             "--background".into(),
             "--json".into(),
+            "--mode".into(),
+            "default".into(),
         ];
         if let Some(title) = title {
             args.extend(["--title".into(), title.into()]);
         }
         args.extend(["--provider".into(), provider.into()]);
-        args.extend(["--cwd".into(), cwd.into()]);
+        if let Some(workspace_id) = workspace_id {
+            args.extend(["--workspace".into(), workspace_id]);
+        } else {
+            args.extend(["--cwd".into(), cwd.into()]);
+        }
         args.extend(self.host_args());
         args.push("--".into());
         args.push(prompt.into());
@@ -347,14 +476,70 @@ fn parse_json_output(
     })
 }
 
-fn is_supported_version(version: &str) -> bool {
-    let mut parts = version.split('.');
-    matches!(parts.next(), Some("0"))
-        && matches!(parts.next(), Some("2" | "3"))
-        && parts
+fn is_observable_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 40
+        && !version.chars().any(char::is_control)
+        && version.chars().any(|ch| ch.is_ascii_digit())
+}
+
+fn exact_workspace_for_cwd(raw: &str, expected_cwd: &str) -> Option<String> {
+    let root = serde_json::from_str::<Value>(raw).ok()?;
+    let workspaces = root
+        .as_array()
+        .or_else(|| root.get("workspaces").and_then(Value::as_array))?;
+    let expected = normalized_cwd(expected_cwd);
+    let mut matches = workspaces.iter().filter_map(|workspace| {
+        let cwd = workspace
+            .get("cwd")
+            .or_else(|| workspace.get("path"))
+            .and_then(Value::as_str)?;
+        if normalized_cwd(cwd) != expected {
+            return None;
+        }
+        workspace
+            .get("workspaceId")
+            .or_else(|| workspace.get("workspace_id"))
+            .or_else(|| workspace.get("id"))
+            .and_then(Value::as_str)
+            .filter(|id| {
+                !id.is_empty()
+                    && id.len() <= 4_096
+                    && !id.starts_with('-')
+                    && !id.chars().any(char::is_control)
+            })
+            .map(str::to_string)
+    });
+    let first = matches.next()?;
+    matches.all(|candidate| candidate == first).then_some(first)
+}
+
+fn normalized_cwd(value: &str) -> String {
+    value
+        .trim()
+        .strip_prefix(r"\\?\")
+        .unwrap_or(value.trim())
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+fn help_has_command(help: &str, command: &str) -> bool {
+    help.lines().any(|line| {
+        line.trim_start()
+            .split_whitespace()
             .next()
-            .is_some_and(|patch| !patch.is_empty() && patch.chars().all(|ch| ch.is_ascii_digit()))
-        && parts.next().is_none()
+            .is_some_and(|token| token == command)
+    })
+}
+
+fn capability_warning(capability: &str, error: &PaseoError) -> Value {
+    json!({
+        "code": "PASEO_CAPABILITY_UNAVAILABLE",
+        "message": "A Paseo capability probe did not succeed.",
+        "retryable": error.retryable,
+        "details": {"capability": capability, "cause": error.code}
+    })
 }
 
 fn status_is_reachable(status: &str) -> bool {
@@ -517,6 +702,7 @@ mod tests {
                 output("0.2.5"),
                 output(r#"{"ok":true}"#),
                 output(r#"{"ok":true}"#),
+                output("[]"),
                 output(r#"{"id":"agent-new"}"#),
             ])),
         };
@@ -536,7 +722,7 @@ mod tests {
             .unwrap();
 
         let calls = calls.lock().unwrap();
-        assert_eq!(calls.len(), 4);
+        assert_eq!(calls.len(), 5);
         let allow = &calls[1].args;
         assert!(allow
             .windows(3)
@@ -554,15 +740,34 @@ mod tests {
             .iter()
             .any(|arg| arg == "--all" || arg == "--interrupt"));
 
-        let create = &calls[3].args;
+        let create = &calls[4].args;
         assert!(create.iter().any(|arg| arg == "--background"));
         assert!(create.iter().any(|arg| arg == "--json"));
+        assert!(create.windows(2).any(|args| args == ["--mode", "default"]));
         assert_eq!(
             create.last().map(String::as_str),
             Some("run tests && report")
         );
         assert_eq!(create.get(create.len() - 2).map(String::as_str), Some("--"));
         assert!(!create.iter().any(|arg| arg == "cmd" || arg == "sh"));
+    }
+
+    #[test]
+    fn workspace_selection_requires_one_exact_cwd_identity() {
+        let raw = r#"[
+          {"workspaceId":"wks-exact","cwd":"E:\\Coding\\repo"},
+          {"workspaceId":"wks-other","cwd":"E:\\Coding\\other"}
+        ]"#;
+        assert_eq!(
+            exact_workspace_for_cwd(raw, r"\\?\E:\Coding\repo").as_deref(),
+            Some("wks-exact")
+        );
+
+        let ambiguous = r#"[
+          {"workspaceId":"wks-one","cwd":"E:\\Coding\\repo"},
+          {"workspaceId":"wks-two","cwd":"E:\\Coding\\repo"}
+        ]"#;
+        assert_eq!(exact_workspace_for_cwd(ambiguous, r"E:\Coding\repo"), None);
     }
 
     #[test]
@@ -631,15 +836,97 @@ mod tests {
     }
 
     #[test]
-    fn supported_version_requires_a_numeric_patch_component() {
-        assert!(is_supported_version("0.2.2"));
-        assert!(is_supported_version("0.2.30"));
-        assert!(is_supported_version("0.3.0"));
-        assert!(is_supported_version("0.3.12"));
-        assert!(!is_supported_version("0.2.secret"));
-        assert!(!is_supported_version("0.3.secret"));
-        assert!(!is_supported_version("0.2.2.extra"));
-        assert!(!is_supported_version("0.4.0"));
+    fn version_is_diagnostic_not_a_minor_version_gate() {
+        assert!(is_observable_version("0.2.5"));
+        assert!(is_observable_version("0.3.1"));
+        assert!(is_observable_version("0.4.0-beta.1"));
+        assert!(is_observable_version("1.0.0"));
+        assert!(!is_observable_version(""));
+        assert!(!is_observable_version("version-unknown"));
+    }
+
+    #[test]
+    fn permission_listing_is_enriched_from_exact_agent_inspection() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp
+            .path()
+            .join(if cfg!(windows) { "paseo.exe" } else { "paseo" });
+        std::fs::write(&binary, "fixture").unwrap();
+        let config = PaseoIntegrationConfig {
+            enabled: true,
+            access_mode: PaseoAccessMode::Control,
+            binary_path: binary.display().to_string(),
+            ..PaseoIntegrationConfig::default()
+        };
+        let context = PaseoRuntimeContext::new("ws".into(), temp.path().into(), config, None);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let client = PaseoCliClient::new(
+            context,
+            FakeRunner {
+                calls: calls.clone(),
+                outputs: Arc::new(Mutex::new(vec![
+                    output("0.3.1"),
+                    output(include_str!(
+                        "../../../tests/fixtures/paseo/permissions-v0.3.1-list.json"
+                    )),
+                    output(include_str!(
+                        "../../../tests/fixtures/paseo/permissions-v0.3.1-inspect.json"
+                    )),
+                ])),
+            },
+        );
+
+        let parsed = client.list_pending_permissions().unwrap();
+        assert_eq!(parsed.data.len(), 1);
+        assert_eq!(
+            parsed.data[0].request_id.as_deref(),
+            Some("permission-174b288d-cc76-499e-bf68-9fb7b968f4e9")
+        );
+        assert!(parsed.data[0].control_safe);
+        assert_eq!(parsed.data[0].source, "agent_inspect");
+        assert!(parsed.warnings.is_empty());
+        let calls = calls.lock().unwrap();
+        assert!(calls[2]
+            .args
+            .windows(2)
+            .any(|args| args == ["inspect", "37c6d4c7-8092-4939-8ef4-178b63879ca2"]));
+    }
+
+    #[test]
+    fn capabilities_are_probed_from_safe_reads_and_command_surfaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp
+            .path()
+            .join(if cfg!(windows) { "paseo.exe" } else { "paseo" });
+        std::fs::write(&binary, "fixture").unwrap();
+        let config = PaseoIntegrationConfig {
+            enabled: true,
+            binary_path: binary.display().to_string(),
+            ..PaseoIntegrationConfig::default()
+        };
+        let context = PaseoRuntimeContext::new("ws".into(), temp.path().into(), config, None);
+        let client = PaseoCliClient::new(
+            context,
+            FakeRunner {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                outputs: Arc::new(Mutex::new(vec![
+                    output("0.3.1"),
+                    output("[]"),
+                    output("[]"),
+                    output("  logs\n  inspect\n  send\n  stop\n  run\n"),
+                    output("  ls\n  allow\n  deny\n"),
+                ])),
+            },
+        );
+
+        let capabilities = client.detect_capabilities().unwrap();
+        assert!(capabilities.list_agents);
+        assert!(capabilities.permissions);
+        assert!(capabilities.permission_details);
+        assert!(capabilities.allow_permission);
+        assert!(capabilities.deny_permission);
+        assert!(capabilities.create_agent);
+        assert!(capabilities.json_output);
     }
 
     #[test]

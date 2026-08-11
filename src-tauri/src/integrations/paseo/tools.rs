@@ -57,16 +57,16 @@ fn health<C: PaseoClient>(
         }
     }
     let status = client.daemon_status()?;
+    let detected = client.detect_capabilities()?;
     let mode = ctx.config.access_mode;
-    let warnings = if status.reachable {
-        Vec::new()
-    } else {
-        vec![json!({
+    let mut warnings = detected.warnings.clone();
+    if !status.reachable {
+        warnings.push(json!({
             "code": "PASEO_DAEMON_UNREACHABLE",
             "message": "The Paseo CLI responded, but no reachable daemon was reported.",
             "retryable": true
-        })]
-    };
+        }));
+    }
     let value = json!({
         "ok": status.reachable,
         "cli_available": true,
@@ -78,14 +78,16 @@ fn health<C: PaseoClient>(
         "host": redaction::redact_host(ctx.host.as_deref()),
         "access_mode": mode.as_str(),
         "capabilities": {
-            "list_agents": true,
-            "activity": true,
-            "permissions": true,
-            "send_prompt": mode.allows_assist(),
-            "stop_agent": mode.allows_control()
-            ,"allow_permission": mode.allows_control()
-            ,"deny_permission": mode.allows_control()
-            ,"create_agent": mode.allows_control()
+            "list_agents": detected.list_agents,
+            "activity": detected.activity,
+            "permissions": detected.permissions,
+            "permission_details": detected.permission_details,
+            "json_output": detected.json_output,
+            "send_prompt": detected.send_prompt && mode.allows_assist(),
+            "stop_agent": detected.stop_agent && mode.allows_control(),
+            "allow_permission": detected.allow_permission && detected.permission_details && mode.allows_control(),
+            "deny_permission": detected.deny_permission && detected.permission_details && mode.allows_control(),
+            "create_agent": detected.create_agent && mode.allows_control()
         },
         "warnings": warnings
     });
@@ -164,20 +166,8 @@ fn permission_operation<C: PaseoClient>(
         ));
     }
 
-    let pending = client.list_pending_permissions()?.data;
-    let exists = pending.iter().any(|permission| {
-        permission.agent_id.as_deref() == Some(agent_id)
-            && permission.request_id.as_deref() == Some(request_id)
-    });
-    if !exists {
-        return Err(PaseoError::new(
-            "PASEO_PERMISSION_NOT_FOUND",
-            "The exact pending Paseo permission request was not found.",
-            false,
-            "permission_lookup",
-            json!({"agent_id": agent_id, "request_id": request_id}),
-        ));
-    }
+    let pending = client.list_pending_permissions()?;
+    require_exact_permission(&pending, agent_id, request_id)?;
 
     let action = if allow {
         "allow_permission"
@@ -203,6 +193,50 @@ fn permission_operation<C: PaseoClient>(
         "decision": if allow { "allowed" } else { "denied" },
         "interrupt_requested": false
     }))
+}
+
+fn require_exact_permission<'a>(
+    pending: &'a super::model::ParsedPaseo<Vec<super::model::PermissionSummary>>,
+    agent_id: &str,
+    request_id: &str,
+) -> Result<&'a super::model::PermissionSummary, PaseoError> {
+    let exact = pending.data.iter().find(|permission| {
+        permission.agent_id.as_deref() == Some(agent_id)
+            && permission.request_id.as_deref() == Some(request_id)
+    });
+    if exact.is_some_and(|permission| !permission.control_safe) {
+        return Err(permission_schema_unsupported(agent_id));
+    }
+    if exact.is_none() {
+        let has_verified_for_agent = pending.data.iter().any(|permission| {
+            permission.agent_id.as_deref() == Some(agent_id) && permission.control_safe
+        });
+        let schema_degraded = pending.warnings.iter().any(|warning| {
+            warning.get("code").and_then(Value::as_str)
+                == Some("PASEO_PERMISSION_SCHEMA_UNSUPPORTED")
+        });
+        if schema_degraded && !has_verified_for_agent {
+            return Err(permission_schema_unsupported(agent_id));
+        }
+        return Err(PaseoError::new(
+            "PASEO_PERMISSION_NOT_FOUND",
+            "The exact pending Paseo permission request was not found.",
+            false,
+            "permission_lookup",
+            json!({"agent_id": agent_id, "request_id": request_id}),
+        ));
+    }
+    Ok(exact.expect("exact permission checked above"))
+}
+
+fn permission_schema_unsupported(agent_id: &str) -> PaseoError {
+    PaseoError::new(
+        "PASEO_PERMISSION_SCHEMA_UNSUPPORTED",
+        "Paseo did not provide a complete, verifiable permission record; control failed closed.",
+        false,
+        "permission_lookup",
+        json!({"agent_id": agent_id}),
+    )
 }
 
 fn create_agent<C: PaseoClient>(
@@ -556,6 +590,14 @@ fn error_value(error: PaseoError) -> Value {
             "action": "inspect_paseo_activity_format",
             "reason": "The CLI returned non-empty activity in an unknown format; capture a redacted raw sample and verify the CLI version."
         }]),
+        "PASEO_PERMISSION_SCHEMA_UNSUPPORTED" => json!([{
+            "action": "inspect_pending_permission_schema",
+            "reason": "Refresh pending permissions and require an exact full request ID from a structured agent inspection before retrying."
+        }]),
+        "PASEO_PERMISSION_ID_INVALID" => json!([{
+            "action": "use_exact_permission_id",
+            "reason": "Use the complete request_id returned by paseo_list_pending_permissions; prefixes and display-table IDs are rejected."
+        }]),
         "PASEO_VERSION_UNSUPPORTED" => json!([{
             "action": "update_paseo_integration",
             "reason": "The installed CLI output format is outside the parser's supported 0.2.x-0.3.x range."
@@ -587,7 +629,38 @@ fn error_value(error: PaseoError) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::integrations::paseo::model::PaseoAgentStatus;
+    use crate::integrations::paseo::model::{ParsedPaseo, PaseoAgentStatus, PermissionSummary};
+
+    fn permission(
+        agent_id: &str,
+        request_id: Option<&str>,
+        control_safe: bool,
+    ) -> PermissionSummary {
+        PermissionSummary {
+            request_id: request_id.map(str::to_string),
+            agent_id: Some(agent_id.into()),
+            tool: Some("Write".into()),
+            permission_type: "Write".into(),
+            requested_at: None,
+            summary: "Write".into(),
+            control_safe,
+            source: "test".into(),
+        }
+    }
+
+    fn pending(
+        data: Vec<PermissionSummary>,
+        warnings: Vec<Value>,
+    ) -> ParsedPaseo<Vec<PermissionSummary>> {
+        ParsedPaseo {
+            data,
+            source_format: "json",
+            parser_version: "test",
+            missing_fields: Vec::new(),
+            warnings,
+            truncated: false,
+        }
+    }
 
     #[test]
     fn bounded_filter_enforces_limit_and_patterns() {
@@ -623,6 +696,37 @@ mod tests {
         let context = PaseoRuntimeContext::disabled(std::path::PathBuf::from("."));
         let result = test_health(&context, true);
         assert_eq!(result["error"]["code"], "PASEO_DISABLED");
+    }
+
+    #[test]
+    fn permission_control_requires_exact_verified_agent_and_request_ids() {
+        let full = "permission-174b288d-cc76-499e-bf68-9fb7b968f4e9";
+        let parsed = pending(vec![permission("agent-full", Some(full), true)], Vec::new());
+        assert!(require_exact_permission(&parsed, "agent-full", full).is_ok());
+        assert_eq!(
+            require_exact_permission(&parsed, "agent-full", "permission-174b")
+                .unwrap_err()
+                .code,
+            "PASEO_PERMISSION_NOT_FOUND"
+        );
+        assert_eq!(
+            require_exact_permission(&parsed, "agent", full)
+                .unwrap_err()
+                .code,
+            "PASEO_PERMISSION_NOT_FOUND"
+        );
+    }
+
+    #[test]
+    fn permission_control_fails_closed_for_lossy_or_missing_ids() {
+        let warning = json!({"code": "PASEO_PERMISSION_SCHEMA_UNSUPPORTED"});
+        let parsed = pending(vec![permission("agent-full", None, false)], vec![warning]);
+        assert_eq!(
+            require_exact_permission(&parsed, "agent-full", "permissi")
+                .unwrap_err()
+                .code,
+            "PASEO_PERMISSION_SCHEMA_UNSUPPORTED"
+        );
     }
 
     #[test]

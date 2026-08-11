@@ -1,0 +1,8 @@
+[Shell] cargo test --lib
+[Edit] src/example.rs
+[Write] output.txt
+[Read] input.txt
+[Thought] private chain-of-thought that must never be exposed
+[Task Notification] Tests completed successfully.
+[AskUserQuestion] Choose whether to continue.
+[UnknownFutureKind] future payload

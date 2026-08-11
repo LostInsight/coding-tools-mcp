@@ -185,6 +185,8 @@ mod tests {
                 activity_fingerprint: "fingerprint".into(),
                 last_effective_progress_at: None,
                 observed_at: "2026-07-26T00:00:00Z".into(),
+                degraded: false,
+                warnings: Vec::new(),
             }],
         }
     }

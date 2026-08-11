@@ -66,7 +66,13 @@ pub fn begin_create(ctx: &PaseoRuntimeContext) -> Result<(), PaseoError> {
 
 pub fn validate_request_id(value: &str) -> Result<(), PaseoError> {
     if value.is_empty() || value.len() > 128 || !request_id_pattern().is_match(value) {
-        return Err(PaseoError::argument("request_id has an invalid format"));
+        return Err(PaseoError::new(
+            "PASEO_PERMISSION_ID_INVALID",
+            "request_id has an invalid format",
+            false,
+            "validate_permission_id",
+            serde_json::json!({}),
+        ));
     }
     Ok(())
 }
