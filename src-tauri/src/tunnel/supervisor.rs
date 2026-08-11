@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use tokio::process::Child;
 use tokio::time::{sleep, Duration, Instant};
 
@@ -1116,13 +1118,35 @@ pub fn append_profile_log(profile_id: &str, file_name: &str, line: &str) {
         .append(true)
         .open(path)
     {
-        let _ = writeln!(file, "{line}");
+        let _ = writeln!(file, "{}", timestamped_profile_log_line(line));
     }
+}
+
+fn timestamped_profile_log_line(line: &str) -> String {
+    timestamped_profile_log_line_at(line, OffsetDateTime::now_utc())
+}
+
+fn timestamped_profile_log_line_at(line: &str, timestamp: OffsetDateTime) -> String {
+    let timestamp = timestamp
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "unknown-time".to_string());
+    format!("[{timestamp}] {line}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_log_lines_include_an_unambiguous_utc_timestamp() {
+        let timestamp =
+            OffsetDateTime::parse("2026-08-11T12:34:56Z", &Rfc3339).expect("valid test timestamp");
+
+        assert_eq!(
+            timestamped_profile_log_line_at("[rpc] completed id=1", timestamp),
+            "[2026-08-11T12:34:56Z] [rpc] completed id=1"
+        );
+    }
 
     fn frp_profile(name: &str, subdomain: &str) -> WorkspaceProfile {
         let mut profile = WorkspaceProfile::new(format!("C:/workspace/{name}"), Some(name.into()));

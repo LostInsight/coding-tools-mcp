@@ -583,6 +583,14 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let content = std::fs::read_to_string(log_dir.join("mcp-access.log"))
             .expect("read access log");
+        let line = content.lines().last().expect("access log line");
+        let timestamp_end = line.find("] ").expect("timestamp delimiter");
+        let timestamp = &line[1..timestamp_end];
+        assert!(time::OffsetDateTime::parse(
+            timestamp,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .is_ok());
         assert!(content.contains("method=GET path=/mcp status=200"));
         assert!(!content.contains("access_token"));
 
