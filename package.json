@@ -1,6 +1,6 @@
 {
   "name": "coding-tools-mcp-desktop",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "description": "Coding Tools MCP desktop client",
   "type": "module",
   "scripts": {

@@ -4,6 +4,17 @@
 
 - No changes yet.
 
+## 0.1.37 - 2026-08-12
+
+### Paseo Compatibility
+
+- Added capability-based adapters for Paseo 0.2.x and 0.3.1 structured output, preserving complete permission and agent identifiers and failing closed for unsafe Control requests.
+- Made activity parsing tolerant of new event kinds, redacted Thought content, and isolated malformed activity to the affected agent in monitor snapshots.
+
+### Logging
+
+- Added UTC RFC3339 date/time prefixes to MCP access, RPC, stdout, and stderr profile logs.
+
 ## 0.1.36 - 2026-08-09
 
 ### Desktop Stability
