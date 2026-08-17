@@ -9,10 +9,12 @@ mod secrets;
 mod software;
 mod tunnel;
 pub(crate) mod ui_memory;
+pub(crate) mod window_chrome;
 mod workspace;
 
 pub use app_info::{check_app_update, open_url};
 pub use ui_memory::{get_webview_memory_sample, recreate_ui_webview};
+pub use window_chrome::{hide_to_tray, quit_app, show_main_window};
 pub use cloudflare_profiles::{
     delete_cloudflare_profile, list_cloudflare_profiles, save_cloudflare_profile,
 };

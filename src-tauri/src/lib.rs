@@ -24,34 +24,30 @@ use commands::{
     check_app_update, clear_paseo_monitor_snapshots, create_workspace, delete_cloudflare_profile,
     delete_frp_profile, delete_workspace, get_actions_runtime_status, get_app_settings,
     get_download_config, get_frp_snippet, get_last_workspace_id, get_paseo_integration_settings,
-    get_proxy, get_runtime_status, get_shared_secret, get_tunnel_status, get_workspace_secret,
-    install_software, list_cloudflare_profiles, list_frp_profiles, list_paseo_filter_options,
-    list_software, list_workspaces, open_url, open_workspace_directory, read_workspace_logs,
+    get_proxy, get_runtime_status, get_shared_secret, get_tunnel_status, get_webview_memory_sample,
+    get_workspace_secret, hide_to_tray, install_software, list_cloudflare_profiles,
+    list_frp_profiles, list_paseo_filter_options, list_software, list_workspaces, open_url,
+    open_workspace_directory, quit_app, read_workspace_logs, recreate_ui_webview,
     regenerate_shared_secret, regenerate_workspace_secret, restart_actions_runtime,
     restart_runtime, restart_tunnel, run_health_checks, save_cloudflare_profile, save_frp_profile,
     save_paseo_integration_settings, set_download_config, set_last_workspace, set_proxy,
-    set_shared_secret, set_workspace_secret, start_actions_runtime, start_runtime, start_tunnel,
-    stop_actions_runtime, stop_runtime, stop_tunnel, test_paseo_connection, test_tunnel,
-    uninstall_software, update_workspace,
-    get_webview_memory_sample, recreate_ui_webview,
+    set_shared_secret, set_workspace_secret, show_main_window, start_actions_runtime,
+    start_runtime, start_tunnel, stop_actions_runtime, stop_runtime, stop_tunnel,
+    test_paseo_connection, test_tunnel, uninstall_software, update_workspace,
 };
-use tauri::Manager;
-
-#[cfg(desktop)]
-use tauri::{
-    menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
-};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 
 #[cfg(target_os = "windows")]
-fn acquire_single_instance() -> bool {
+fn signal_existing_instance() -> bool {
     use windows::core::w;
-    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
-    use windows::Win32::System::Threading::CreateMutexW;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::{
+        CreateEventW, CreateMutexW, OpenEventW, SetEvent, EVENT_MODIFY_STATE,
+    };
 
-    // 保持 mutex HANDLE 到进程退出，由 Windows 自动回收。第二个实例必须在
-    // cleanup_managed_frpc_instances 之前退出，否则会清理第一个实例的 frpc。
-    let Ok(handle) = (unsafe {
+    let Ok(mutex) = (unsafe {
         CreateMutexW(
             None,
             false,
@@ -62,15 +58,108 @@ fn acquire_single_instance() -> bool {
         return false;
     };
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-        let _ = unsafe { CloseHandle(handle) };
+        let _ = unsafe { CloseHandle(mutex) };
+        if let Ok(event) = unsafe {
+            OpenEventW(
+                EVENT_MODIFY_STATE,
+                false,
+                w!("Local\\CodingToolsMcpDesktop-ShowWindow"),
+            )
+        } {
+            let _ = unsafe { SetEvent(event) };
+            let _ = unsafe { CloseHandle(event) };
+        }
         return false;
     }
+
+    // Keep mutex handle for process lifetime (do not CloseHandle).
+    let _ = INSTANCE_MUTEX.set(mutex.0 as usize);
+
+    let Ok(event) = (unsafe {
+        CreateEventW(
+            None,
+            false,
+            false,
+            w!("Local\\CodingToolsMcpDesktop-ShowWindow"),
+        )
+    }) else {
+        return true;
+    };
+    // Pass the handle as usize so the waiter thread is Send (HANDLE is !Send).
+    let event_bits = event.0 as usize;
+    std::thread::spawn(move || {
+        use windows::Win32::System::Threading::{WaitForSingleObject, INFINITE};
+        let event = HANDLE(event_bits as *mut std::ffi::c_void);
+        loop {
+            let _ = unsafe { WaitForSingleObject(event, INFINITE) };
+            if let Some(app) = SHOW_APP_HANDLE.get() {
+                let _ = commands::window_chrome::show_main_window(app.clone());
+            }
+        }
+    });
     true
+}
+
+#[cfg(target_os = "windows")]
+static SHOW_APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "windows")]
+static INSTANCE_MUTEX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "windows")]
+fn acquire_single_instance() -> bool {
+    signal_existing_instance()
 }
 
 #[cfg(not(target_os = "windows"))]
 fn acquire_single_instance() -> bool {
     true
+}
+
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show_i = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
+    let reload_i = MenuItem::with_id(app, "reload-ui", "重新加载界面", true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_i, &reload_i, &quit_i])?;
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .menu(&menu)
+        .tooltip("Coding Tools MCP")
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                let _ = commands::window_chrome::show_main_window(app.clone());
+            }
+            "reload-ui" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = recreate_ui_webview(app).await {
+                        eprintln!("tray UI recreate failed: {error}");
+                    }
+                });
+            }
+            "quit" => {
+                commands::window_chrome::arm_allow_exit();
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let _ = commands::window_chrome::show_main_window(tray.app_handle().clone());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    builder.build(app)?;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -85,29 +174,10 @@ pub fn run() {
             // Recover FRP clients that stay alive while the public proxy dies
             // (common after install/restart network blips).
             tunnel::ensure_frp_health_loop();
-
-            #[cfg(desktop)]
+            setup_tray(app)?;
+            #[cfg(target_os = "windows")]
             {
-                let reload_item =
-                    MenuItem::with_id(app, "reload-ui", "重新加载界面", true, None::<&str>)?;
-                let menu = Menu::with_items(app, &[&reload_item])?;
-                let mut tray = TrayIconBuilder::new()
-                    .menu(&menu)
-                    .show_menu_on_left_click(false)
-                    .on_menu_event(|app, event| {
-                        if event.id.as_ref() == "reload-ui" {
-                            let app = app.clone();
-                            tauri::async_runtime::spawn(async move {
-                                if let Err(error) = recreate_ui_webview(app).await {
-                                    eprintln!("tray UI recreate failed: {error}");
-                                }
-                            });
-                        }
-                    });
-                if let Some(icon) = app.default_window_icon().cloned() {
-                    tray = tray.icon(icon);
-                }
-                tray.build(app)?;
+                let _ = SHOW_APP_HANDLE.set(app.handle().clone());
             }
             Ok(())
         })
@@ -164,17 +234,32 @@ pub fn run() {
             set_proxy,
             get_webview_memory_sample,
             recreate_ui_webview,
+            hide_to_tray,
+            show_main_window,
+            quit_app,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app_handle, event| {
-            // While recreating the UI WebView we temporarily destroy the main
-            // window; without prevent_exit Tauri would quit the whole process
-            // and take MCP/FRP down with it (0.1.30 regression).
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { api, .. } => {
+                // While recreating the UI WebView we temporarily destroy the main
+                // window; without prevent_exit Tauri would quit the whole process
+                // and take MCP/FRP down with it (0.1.30 regression).
                 if commands::ui_memory::should_prevent_exit() {
                     api.prevent_exit();
                 }
             }
+            tauri::RunEvent::WindowEvent { label, event, .. } => {
+                if label != "main" {
+                    return;
+                }
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    if commands::window_chrome::should_intercept_close() {
+                        api.prevent_close();
+                        let _ = app_handle.emit("close-requested", ());
+                    }
+                }
+            }
+            _ => {}
         });
 }
