@@ -915,6 +915,9 @@ fn command_for_program(program: &str, args: &[String]) -> Command {
     command
 }
 
+/// 仅在 Windows 使用：唯一调用点位于 `command_for_program` 的 cfg(windows) 分支，
+/// .bat/.cmd 需要 raw_arg 传递整条命令行。
+#[cfg(windows)]
 fn windows_batch_command_line(program: &str, args: &[String]) -> String {
     let mut command_line = String::from("call ");
     command_line.push_str(&windows_batch_token(&windows_command_path(program)));
