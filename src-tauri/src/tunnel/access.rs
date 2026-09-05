@@ -32,11 +32,26 @@ pub fn ensure_frp_health_loop() {
     tauri::async_runtime::spawn(async {
         loop {
             sleep(FRP_HEALTH_INTERVAL).await;
-            let settings = AppSettings::load_or_default();
-            let mut guard = supervisor().lock().await;
-            let _ = guard.heal_unhealthy_frpc(&settings).await;
+            heal_frpc_once().await;
         }
     });
+}
+
+/// 单轮自愈：持锁快照 → 锁外探测 → 持锁应用。
+/// 空闲（无 frpc 进程）时直接返回，不再每轮读盘加载设置；
+/// 网络探测全程不持有 supervisor 全局锁，UI 的隧道命令不会被阻塞。
+async fn heal_frpc_once() {
+    let probes = {
+        let guard = supervisor().lock().await;
+        guard.snapshot_frpc_health()
+    };
+    if probes.is_empty() {
+        return;
+    }
+    let settings = AppSettings::load_or_default();
+    let diagnoses = TunnelSupervisor::diagnose_frpc_health(&probes, &settings).await;
+    let mut guard = supervisor().lock().await;
+    guard.apply_frpc_health_diagnoses(&settings, diagnoses).await;
 }
 
 fn tunnel_type_for(profile: &WorkspaceProfile, kind: TunnelServiceKind) -> &str {

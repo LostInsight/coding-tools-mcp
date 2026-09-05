@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -547,19 +548,20 @@ pub(crate) fn is_frp_not_found_page(lower_body: &str) -> bool {
             && lower_body.contains("frp"))
 }
 
+/// 健康检查等探测复用同一个客户端：连接池与 TLS 会话保持温热，
+/// 避免 20s 一轮的健康循环反复重建连接。
+static PROBE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .expect("build reqwest probe client")
+});
+
 pub(crate) async fn probe_public_mcp_endpoint(url: &str) -> PublicMcpProbe {
     if url.trim().is_empty() {
         return PublicMcpProbe::Unreachable;
     }
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(6))
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .build()
-    {
-        Ok(client) => client,
-        Err(_) => return PublicMcpProbe::Unreachable,
-    };
-    match client.get(url).send().await {
+    match PROBE_CLIENT.get(url).timeout(Duration::from_secs(6)).send().await {
         Ok(response) => {
             let status = response.status().as_u16();
             let body = response.text().await.unwrap_or_default();
@@ -571,14 +573,12 @@ pub(crate) async fn probe_public_mcp_endpoint(url: &str) -> PublicMcpProbe {
 
 pub(crate) async fn probe_local_mcp_ok(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{port}/mcp");
-    let client = match reqwest::Client::builder()
+    match PROBE_CLIENT
+        .get(&url)
         .timeout(Duration::from_secs(2))
-        .build()
+        .send()
+        .await
     {
-        Ok(client) => client,
-        Err(_) => return false,
-    };
-    match client.get(&url).send().await {
         Ok(response) => response.status().is_success(),
         Err(_) => false,
     }
@@ -714,31 +714,20 @@ async fn stream_frpc_logs<R>(stderr: R, log_paths: Vec<PathBuf>)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    let mut files = Vec::new();
+    use crate::tunnel::supervisor::ProfileLogSink;
+
+    let mut sinks: Vec<ProfileLogSink> = Vec::new();
     for log_path in log_paths {
-        if let Some(parent) = log_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(file) = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-            .await
-        {
-            files.push(file);
-        }
+        sinks.push(ProfileLogSink::open(log_path).await);
     }
-    if files.is_empty() {
+    if sinks.iter().all(|sink| !sink.is_open()) {
         return;
     }
 
     let mut reader = BufReader::new(stderr).lines();
     while let Ok(Some(line)) = reader.next_line().await {
-        use tokio::io::AsyncWriteExt;
-        for file in &mut files {
-            let _ = file.write_all(line.as_bytes()).await;
-            let _ = file.write_all(b"\n").await;
-            let _ = file.flush().await;
+        for sink in &mut sinks {
+            sink.write_line(&line).await;
         }
     }
 }

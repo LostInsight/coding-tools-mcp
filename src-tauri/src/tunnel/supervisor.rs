@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -68,10 +69,32 @@ struct FrpcProcess {
     pid: Option<u32>,
 }
 
+/// 健康检查阶段一的快照：持锁构建，之后锁外探测，不阻塞隧道命令。
+pub(crate) struct FrpcHealthProbe {
+    workspace_id: String,
+    process_alive: bool,
+    routes: Vec<(TunnelServiceKind, WorkspaceProfile)>,
+}
+
+/// 阶段二锁外探测的结论。
+pub(crate) enum FrpcHealthDiagnosis {
+    Healthy { workspace_id: String },
+    Unhealthy { workspace_id: String, reason: String },
+}
+
+impl FrpcHealthDiagnosis {
+    fn workspace_id(&self) -> &str {
+        match self {
+            Self::Healthy { workspace_id } | Self::Unhealthy { workspace_id, .. } => workspace_id,
+        }
+    }
+}
+
 #[derive(Default)]
 struct FrpcHealthState {
     unhealthy_streak: u32,
     last_restart_at: Option<Instant>,
+    restarts_since_healthy: u32,
 }
 
 pub struct TunnelSupervisor {
@@ -89,7 +112,21 @@ impl Default for TunnelSupervisor {
 }
 
 const FRPC_HEALTH_STREAK_TO_RESTART: u32 = 2;
-const FRPC_HEALTH_RESTART_COOLDOWN: Duration = Duration::from_secs(90);
+/// 自动重启连续未恢复的上限：达到后暂停自动恢复，等用户检查后手动重启。
+const FRPC_HEALTH_RESTART_CAP: u32 = 5;
+const FRPC_HEALTH_CAP_MESSAGE: &str =
+    "frpc 自动重启已达上限，已暂停自动恢复。请检查 FRP 服务器可达性后手动重启隧道。";
+
+/// 重启冷却随连续重启次数退避：90s → 3m → 6m → 12m → 封顶 30m。
+fn frpc_health_restart_cooldown(restarts_since_healthy: u32) -> Duration {
+    match restarts_since_healthy {
+        0 | 1 => Duration::from_secs(90),
+        2 => Duration::from_secs(3 * 60),
+        3 => Duration::from_secs(6 * 60),
+        4 => Duration::from_secs(12 * 60),
+        _ => Duration::from_secs(30 * 60),
+    }
+}
 
 #[allow(dead_code)]
 impl TunnelSupervisor {
@@ -103,122 +140,234 @@ impl TunnelSupervisor {
         }
     }
 
-    /// Probe active FRP workspaces; restart frpc when process is alive but proxy is dead.
-    pub async fn heal_unhealthy_frpc(&mut self, settings: &AppSettings) -> usize {
-        let workspace_ids: Vec<String> = self.frpc.keys().cloned().collect();
-        let mut restarted = 0usize;
-        for workspace_id in workspace_ids {
-            let Some(reason) = self.diagnose_frpc_unhealthy(&workspace_id, settings).await else {
-                if let Some(state) = self.frpc_health.get_mut(&workspace_id) {
-                    state.unhealthy_streak = 0;
-                }
-                continue;
-            };
+    /// 空闲门控：没有 frpc 进程时健康循环可以直接跳过本轮。
+    pub fn has_frpc_workspaces(&self) -> bool {
+        !self.frpc.is_empty()
+    }
 
-            let state = self.frpc_health.entry(workspace_id.clone()).or_default();
-            state.unhealthy_streak = state.unhealthy_streak.saturating_add(1);
-            let cooled_down = state
-                .last_restart_at
-                .map(|at| at.elapsed() >= FRPC_HEALTH_RESTART_COOLDOWN)
-                .unwrap_or(true);
-            if state.unhealthy_streak < FRPC_HEALTH_STREAK_TO_RESTART || !cooled_down {
+    /// 阶段一：持锁快照待诊断的 frpc 工作区信息（无磁盘 IO、无网络探测）。
+    pub fn snapshot_frpc_health(&self) -> Vec<FrpcHealthProbe> {
+        self.frpc
+            .keys()
+            .map(|workspace_id| {
+                let process_alive = self.frpc.get(workspace_id).is_some_and(|process| {
+                    process
+                        .pid
+                        .map(|pid| platform().is_process_alive(pid))
+                        .unwrap_or(true)
+                });
+                let routes = self
+                    .frp_routes
+                    .iter()
+                    .filter(|((id, _), _)| id == workspace_id)
+                    .map(|(_, route)| (route.kind, route.profile.clone()))
+                    .collect();
+                FrpcHealthProbe {
+                    workspace_id: workspace_id.clone(),
+                    process_alive,
+                    routes,
+                }
+            })
+            .collect()
+    }
+
+    /// 阶段二：锁外执行日志读取与网络探测，避免长时间占用 supervisor 全局锁。
+    pub(super) async fn diagnose_frpc_health(
+        probes: &[FrpcHealthProbe],
+        settings: &AppSettings,
+    ) -> Vec<FrpcHealthDiagnosis> {
+        let mut diagnoses = Vec::with_capacity(probes.len());
+        for probe in probes {
+            if !probe.process_alive {
+                diagnoses.push(FrpcHealthDiagnosis::Unhealthy {
+                    workspace_id: probe.workspace_id.clone(),
+                    reason: "frpc process exited".into(),
+                });
+                continue;
+            }
+            if probe.routes.is_empty() {
+                diagnoses.push(FrpcHealthDiagnosis::Healthy {
+                    workspace_id: probe.workspace_id.clone(),
+                });
                 continue;
             }
 
-            append_profile_log(
-                &workspace_id,
-                "frpc-mcp.log",
-                &format!("[health] auto-restarting frpc: {reason}"),
-            );
-            match self.restart_workspace_frpc(&workspace_id, settings).await {
-                Ok(()) => {
+            // Prefer MCP log; fall back to Actions log if MCP route absent.
+            let log_kind = if probe
+                .routes
+                .iter()
+                .any(|(kind, _)| *kind == TunnelServiceKind::Mcp)
+            {
+                TunnelServiceKind::Mcp
+            } else {
+                TunnelServiceKind::Actions
+            };
+            let log_path =
+                log_dir_for_profile(&probe.workspace_id).join(frp::frpc_log_name(log_kind));
+            let log_tail = frp::read_frpc_log_tail(&log_path);
+            if frp::frpc_reconnect_loop_detected(&log_tail) {
+                diagnoses.push(FrpcHealthDiagnosis::Unhealthy {
+                    workspace_id: probe.workspace_id.clone(),
+                    reason: "frpc reconnect loop detected in log".into(),
+                });
+                continue;
+            }
+
+            let mut not_routed: Option<String> = None;
+            for (kind, profile) in &probe.routes {
+                let public_url = match kind {
+                    TunnelServiceKind::Mcp => profile.public_endpoint(),
+                    TunnelServiceKind::Actions => {
+                        let base = profile.actions_effective_public_url_with(settings);
+                        if base.is_empty() {
+                            String::new()
+                        } else {
+                            format!("{}/openapi.json", base.trim_end_matches('/'))
+                        }
+                    }
+                };
+                if public_url.is_empty() {
+                    continue;
+                }
+                // Only treat FRP's own 404 page as proof the proxy is dead. Network
+                // blips (Unreachable) alone must not force a restart.
+                if matches!(kind, TunnelServiceKind::Mcp) {
+                    let local_ok = frp::probe_local_mcp_ok(profile.runtime.local_port).await;
+                    if !local_ok {
+                        continue;
+                    }
+                }
+                if frp::probe_public_mcp_endpoint(&public_url).await
+                    == frp::PublicMcpProbe::FrpNotRouted
+                {
+                    not_routed = Some(format!(
+                        "public endpoint returns FRP not-found page ({public_url})"
+                    ));
+                    break;
+                }
+            }
+
+            diagnoses.push(match not_routed {
+                Some(reason) => FrpcHealthDiagnosis::Unhealthy {
+                    workspace_id: probe.workspace_id.clone(),
+                    reason,
+                },
+                None => FrpcHealthDiagnosis::Healthy {
+                    workspace_id: probe.workspace_id.clone(),
+                },
+            });
+        }
+        diagnoses
+    }
+
+    /// 阶段三：持锁应用探测结论；必要时按退避节奏重启 frpc。
+    pub async fn apply_frpc_health_diagnoses(
+        &mut self,
+        settings: &AppSettings,
+        diagnoses: Vec<FrpcHealthDiagnosis>,
+    ) -> usize {
+        let mut restarted = 0usize;
+        for diagnosis in diagnoses {
+            let workspace_id = diagnosis.workspace_id().to_string();
+            // 探测期间用户可能已停止或删除该工作区：以当前状态为准。
+            if !self.frpc.contains_key(&workspace_id) {
+                self.frpc_health.remove(&workspace_id);
+                continue;
+            }
+            match diagnosis {
+                FrpcHealthDiagnosis::Healthy { .. } => {
                     if let Some(state) = self.frpc_health.get_mut(&workspace_id) {
                         state.unhealthy_streak = 0;
-                        state.last_restart_at = Some(Instant::now());
+                        state.restarts_since_healthy = 0;
                     }
-                    restarted += 1;
+                    self.clear_frpc_health_cap_message(&workspace_id);
                 }
-                Err(error) => {
+                FrpcHealthDiagnosis::Unhealthy { reason, .. } => {
+                    let (streak, cooled_down, capped) = {
+                        let state = self.frpc_health.entry(workspace_id.clone()).or_default();
+                        state.unhealthy_streak = state.unhealthy_streak.saturating_add(1);
+                        let cooled_down = state
+                            .last_restart_at
+                            .map(|at| {
+                                at.elapsed()
+                                    >= frpc_health_restart_cooldown(state.restarts_since_healthy)
+                            })
+                            .unwrap_or(true);
+                        (
+                            state.unhealthy_streak,
+                            cooled_down,
+                            state.restarts_since_healthy >= FRPC_HEALTH_RESTART_CAP,
+                        )
+                    };
+                    if capped {
+                        self.record_frpc_health_cap_message(&workspace_id);
+                        continue;
+                    }
+                    if streak < FRPC_HEALTH_STREAK_TO_RESTART || !cooled_down {
+                        continue;
+                    }
+
                     append_profile_log(
                         &workspace_id,
                         "frpc-mcp.log",
-                        &format!("[health] auto-restart failed: {error}"),
+                        &format!("[health] auto-restarting frpc: {reason}"),
                     );
+                    match self.restart_workspace_frpc(&workspace_id, settings).await {
+                        Ok(()) => {
+                            if let Some(state) = self.frpc_health.get_mut(&workspace_id) {
+                                state.unhealthy_streak = 0;
+                                state.last_restart_at = Some(Instant::now());
+                                state.restarts_since_healthy =
+                                    state.restarts_since_healthy.saturating_add(1);
+                            }
+                            restarted += 1;
+                        }
+                        Err(error) => {
+                            append_profile_log(
+                                &workspace_id,
+                                "frpc-mcp.log",
+                                &format!("[health] auto-restart failed: {error}"),
+                            );
+                            // 失败的重启同样计入退避与上限，避免不可恢复配置下无限重试。
+                            if let Some(state) = self.frpc_health.get_mut(&workspace_id) {
+                                state.last_restart_at = Some(Instant::now());
+                                state.restarts_since_healthy =
+                                    state.restarts_since_healthy.saturating_add(1);
+                            }
+                        }
+                    }
                 }
             }
         }
         restarted
     }
 
-    async fn diagnose_frpc_unhealthy(
-        &self,
-        workspace_id: &str,
-        settings: &AppSettings,
-    ) -> Option<String> {
-        let process_alive = self.frpc.get(workspace_id).is_some_and(|process| {
-            process
-                .pid
-                .map(|pid| platform().is_process_alive(pid))
-                .unwrap_or(true)
-        });
-        if !process_alive {
-            return Some("frpc process exited".into());
-        }
+    fn frp_route_kinds(&self, workspace_id: &str) -> Vec<TunnelServiceKind> {
+        self.frp_routes
+            .keys()
+            .filter(|(id, _)| id == workspace_id)
+            .map(|(_, kind)| *kind)
+            .collect()
+    }
 
-        let routes: Vec<&FrpRoute> = self
-            .frp_routes
-            .iter()
-            .filter(|((id, _), _)| id == workspace_id)
-            .map(|(_, route)| route)
-            .collect();
-        if routes.is_empty() {
-            return None;
+    fn record_frpc_health_cap_message(&mut self, workspace_id: &str) {
+        for kind in self.frp_route_kinds(workspace_id) {
+            self.last_errors
+                .insert((workspace_id.to_string(), kind), FRPC_HEALTH_CAP_MESSAGE.into());
         }
+    }
 
-        // Prefer MCP log; fall back to Actions log if MCP route absent.
-        let log_kind = if routes.iter().any(|r| r.kind == TunnelServiceKind::Mcp) {
-            TunnelServiceKind::Mcp
-        } else {
-            TunnelServiceKind::Actions
-        };
-        let log_path = log_dir_for_profile(workspace_id).join(frp::frpc_log_name(log_kind));
-        let log_tail = frp::read_frpc_log_tail(&log_path);
-        if frp::frpc_reconnect_loop_detected(&log_tail) {
-            return Some("frpc reconnect loop detected in log".into());
-        }
-
-        for route in routes {
-            let public_url = match route.kind {
-                TunnelServiceKind::Mcp => route.profile.public_endpoint(),
-                TunnelServiceKind::Actions => {
-                    let base = route.profile.actions_effective_public_url_with(settings);
-                    if base.is_empty() {
-                        String::new()
-                    } else {
-                        format!("{}/openapi.json", base.trim_end_matches('/'))
-                    }
-                }
-            };
-            if public_url.is_empty() {
-                continue;
-            }
-            // Only treat FRP's own 404 page as proof the proxy is dead. Network
-            // blips (Unreachable) alone must not force a restart.
-            if matches!(route.kind, TunnelServiceKind::Mcp) {
-                let local_ok =
-                    frp::probe_local_mcp_ok(route.profile.runtime.local_port).await;
-                if !local_ok {
-                    continue;
-                }
-            }
-            if frp::probe_public_mcp_endpoint(&public_url).await == frp::PublicMcpProbe::FrpNotRouted
+    fn clear_frpc_health_cap_message(&mut self, workspace_id: &str) {
+        for kind in self.frp_route_kinds(workspace_id) {
+            let key = (workspace_id.to_string(), kind);
+            if self
+                .last_errors
+                .get(&key)
+                .is_some_and(|message| message == FRPC_HEALTH_CAP_MESSAGE)
             {
-                return Some(format!(
-                    "public endpoint returns FRP not-found page ({public_url})"
-                ));
+                self.last_errors.remove(&key);
             }
         }
-        None
     }
 
     pub fn frp_snippet(
@@ -1105,20 +1254,145 @@ pub fn log_dir_for_profile(profile_id: &str) -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("logs").join(profile_id))
 }
 
+/// 单个日志文件超过该大小后轮转为 `<name>.1`（保留一代），防止无限增长。
+pub(crate) const PROFILE_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// append_profile_log 与 frpc/cloudflared 日志流共用同一把锁，
+/// 保证同一文件的轮转与写入不会交错。
+static PROFILE_LOG_LOCK: LazyLock<std::sync::Mutex<()>> =
+    LazyLock::new(|| std::sync::Mutex::new(()));
+
+pub(crate) fn profile_log_lock() -> std::sync::MutexGuard<'static, ()> {
+    PROFILE_LOG_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// `foo.log` → `foo.log.1`（覆盖旧一代）。
+/// Windows 的 rename 不允许目标存在，先移除旧一代；调用方需先关闭自己的句柄。
+pub(crate) fn rotate_profile_log_file(path: &Path) {
+    let mut rotated = path.as_os_str().to_os_string();
+    rotated.push(".1");
+    let rotated = PathBuf::from(rotated);
+    let _ = std::fs::remove_file(&rotated);
+    let _ = std::fs::rename(path, &rotated);
+}
+
+fn open_profile_log(path: &Path, log_dir: &Path) -> Option<std::fs::File> {
+    match std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        Ok(file) => Some(file),
+        // 目录缺失时才补建，避免每行日志都触发一次 create_dir_all。
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(log_dir).ok()?;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()
+        }
+        Err(_) => None,
+    }
+}
+
 pub fn append_profile_log(profile_id: &str, file_name: &str, line: &str) {
+    let _guard = profile_log_lock();
+    let log_dir = log_dir_for_profile(profile_id);
+    let path = log_dir.join(file_name);
+    append_profile_log_line(&path, &log_dir, line, PROFILE_LOG_MAX_BYTES);
+}
+
+fn append_profile_log_line(path: &Path, log_dir: &Path, line: &str, max_bytes: u64) {
     use std::io::Write;
 
-    let log_dir = log_dir_for_profile(profile_id);
-    if std::fs::create_dir_all(&log_dir).is_err() {
-        return;
+    let mut file = match open_profile_log(path, log_dir) {
+        Some(file) => file,
+        None => return,
+    };
+    if file.metadata().map(|meta| meta.len()).unwrap_or(0) >= max_bytes {
+        drop(file);
+        rotate_profile_log_file(path);
+        match open_profile_log(path, log_dir) {
+            Some(fresh) => file = fresh,
+            None => return,
+        }
     }
-    let path = log_dir.join(file_name);
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{}", timestamped_profile_log_line(line));
+    let _ = writeln!(file, "{}", timestamped_profile_log_line(line));
+}
+
+/// 供 frpc / cloudflared 日志流使用的带轮转写入器：按已写入字节数触发轮转。
+pub(crate) struct ProfileLogSink {
+    path: PathBuf,
+    file: Option<tokio::fs::File>,
+    /// 当前句柄累计写入的字节数（含打开时文件已有长度）。
+    written: u64,
+}
+
+impl ProfileLogSink {
+    pub(crate) fn is_open(&self) -> bool {
+        self.file.is_some()
+    }
+
+    pub(crate) async fn open(path: PathBuf) -> Self {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => {
+                let existing = file.metadata().await.map(|meta| meta.len()).unwrap_or(0);
+                Self {
+                    path,
+                    file: Some(file),
+                    written: existing,
+                }
+            }
+            Err(_) => Self {
+                path,
+                file: None,
+                written: 0,
+            },
+        }
+    }
+
+    pub(crate) async fn write_line(&mut self, line: &str) {
+        use tokio::io::AsyncWriteExt;
+
+        if self.written >= PROFILE_LOG_MAX_BYTES {
+            self.rotate().await;
+        }
+        let Some(file) = self.file.as_mut() else {
+            return;
+        };
+        let _ = file.write_all(line.as_bytes()).await;
+        let _ = file.write_all(b"\n").await;
+        let _ = file.flush().await;
+        self.written += line.len() as u64 + 1;
+    }
+
+    async fn rotate(&mut self) {
+        // 先关闭句柄：Windows 上打开中的文件不允许 rename。
+        self.file = None;
+        {
+            let _guard = profile_log_lock();
+            rotate_profile_log_file(&self.path);
+        }
+        match tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .await
+        {
+            Ok(file) => {
+                self.file = Some(file);
+                self.written = 0;
+            }
+            // 重开失败：放弃该文件的后续写入，也不再反复尝试轮转。
+            Err(_) => self.written = 0,
+        }
     }
 }
 
@@ -1419,5 +1693,79 @@ mod tests {
         let status = supervisor.status(&profile, TunnelServiceKind::Mcp, &settings);
         assert_eq!(status.state, "error");
         assert!(status.message.contains("当前仅支持"));
+    }
+
+    #[test]
+    fn frpc_health_restart_cooldown_backs_off_and_caps() {
+        assert_eq!(frpc_health_restart_cooldown(0), Duration::from_secs(90));
+        assert_eq!(frpc_health_restart_cooldown(1), Duration::from_secs(90));
+        assert_eq!(frpc_health_restart_cooldown(2), Duration::from_secs(3 * 60));
+        assert_eq!(frpc_health_restart_cooldown(3), Duration::from_secs(6 * 60));
+        assert_eq!(frpc_health_restart_cooldown(4), Duration::from_secs(12 * 60));
+        assert_eq!(frpc_health_restart_cooldown(9), Duration::from_secs(30 * 60));
+    }
+
+    #[test]
+    fn supervisor_without_frpc_reports_idle() {
+        assert!(!TunnelSupervisor::new().has_frpc_workspaces());
+    }
+
+    fn temp_log_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ctm-supervisor-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp log dir");
+        dir
+    }
+
+    #[test]
+    fn profile_log_rotation_moves_oversized_file_aside() {
+        let dir = temp_log_dir("rotate");
+        let path = dir.join("test.log");
+
+        append_profile_log_line(&path, &dir, "alpha", 40);
+        append_profile_log_line(&path, &dir, "beta", 40);
+        assert!(!dir.join("test.log.1").exists());
+
+        append_profile_log_line(&path, &dir, "gamma", 40);
+
+        let rotated = dir.join("test.log.1");
+        let rotated_text = std::fs::read_to_string(&rotated).expect("rotated file");
+        assert!(rotated_text.contains("alpha"));
+        assert!(rotated_text.contains("beta"));
+
+        let main_text = std::fs::read_to_string(&path).expect("main log file");
+        assert!(main_text.contains("gamma"));
+        assert!(!main_text.contains("alpha"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_log_rotation_overwrites_previous_generation() {
+        let dir = temp_log_dir("rotate-overwrite");
+        let path = dir.join("gen.log");
+        std::fs::write(&path, "newest").expect("seed main log");
+        std::fs::write(dir.join("gen.log.1"), "oldest").expect("seed rotated log");
+
+        rotate_profile_log_file(&path);
+
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("gen.log.1")).expect("rotated log"),
+            "newest"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_log_open_creates_missing_dir() {
+        let dir = temp_log_dir("open-missing").join("nested/deeper");
+        let path = dir.join("open.log");
+
+        assert!(open_profile_log(&path, &dir).is_some());
+        assert!(dir.is_dir());
+
+        let _ = std::fs::remove_dir_all(temp_log_dir("open-missing"));
     }
 }

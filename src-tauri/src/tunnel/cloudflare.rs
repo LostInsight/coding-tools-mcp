@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::time;
@@ -9,6 +9,7 @@ use tokio::time;
 use crate::error::{AppError, AppResult};
 use crate::platform::platform;
 use crate::settings::ProxyConfig;
+use crate::tunnel::supervisor::ProfileLogSink;
 
 const QUICK_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const NAMED_READY_TIMEOUT: Duration = Duration::from_secs(180);
@@ -372,22 +373,15 @@ async fn stream_cloudflare_output<R, E>(
     let mut ready_tx = Some(ready_tx);
     let mut public_url: Option<String> = None;
 
-    let mut log = match tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .await
-    {
-        Ok(file) => file,
-        Err(_) => {
-            if quick {
-                if let Some(tx) = ready_tx.take() {
-                    let _ = tx.send(QuickTunnelReady { public_url: None });
-                }
+    let mut log = ProfileLogSink::open(log_path.to_path_buf()).await;
+    if !log.is_open() {
+        if quick {
+            if let Some(tx) = ready_tx.take() {
+                let _ = tx.send(QuickTunnelReady { public_url: None });
             }
-            return;
         }
-    };
+        return;
+    }
 
     let send_ready = |tx: &mut Option<oneshot::Sender<QuickTunnelReady>>, url: Option<String>| {
         if let Some(sender) = tx.take() {
@@ -435,9 +429,7 @@ async fn stream_cloudflare_output<R, E>(
     }
 
     while let Some(line) = line_rx.recv().await {
-        let _ = log.write_all(line.as_bytes()).await;
-        let _ = log.write_all(b"\n").await;
-        let _ = log.flush().await;
+        log.write_line(&line).await;
         handle_line(&line, &mut public_url, &mut ready_tx);
     }
 
