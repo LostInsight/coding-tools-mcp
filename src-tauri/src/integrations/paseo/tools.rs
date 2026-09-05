@@ -664,13 +664,19 @@ mod tests {
 
     #[test]
     fn bounded_filter_enforces_limit_and_patterns() {
+        // Windows 上同时验证斜杠方向混合的路径归一化；非 Windows 为严格比较。
+        let (workspace_value, workspace_filter) = if cfg!(windows) {
+            ("C:\\work", "C:/work")
+        } else {
+            ("/work", "/work")
+        };
         let agents = (0..5)
             .map(|index| PaseoAgent {
                 id: format!("agent-{index}"),
                 name: Some(format!("worker-{index}")),
                 status: PaseoAgentStatus::Running,
                 provider: None,
-                workspace: Some("C:\\work".into()),
+                workspace: Some(workspace_value.into()),
                 created_at: None,
                 updated_at: None,
                 last_activity_at: None,
@@ -681,7 +687,7 @@ mod tests {
         let filtered = monitor::filter_agents(
             agents,
             true,
-            Some("C:/work"),
+            Some(workspace_filter),
             &[],
             &["worker-*".into()],
             &["team=one".into()],
