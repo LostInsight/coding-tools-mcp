@@ -184,6 +184,16 @@ pub struct ActivityEvent {
     pub error_signature: Option<String>,
 }
 
+impl ActivityEvent {
+    pub(crate) fn kind_is_diagnostic_evidence(kind: &str) -> bool {
+        !kind.eq_ignore_ascii_case("user")
+    }
+
+    pub(crate) fn is_diagnostic_evidence(&self) -> bool {
+        Self::kind_is_diagnostic_evidence(&self.kind)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionSummary {
     pub request_id: Option<String>,

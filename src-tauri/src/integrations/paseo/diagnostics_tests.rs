@@ -126,6 +126,56 @@ fn repeated_errors_are_aggregated() {
 }
 
 #[test]
+fn user_messages_are_ignored_by_error_and_waiting_diagnostics() {
+    let mut first = event(
+        "messages",
+        "message indicates waiting for user input",
+        Some("err-user-text"),
+    );
+    first.kind = "User".into();
+    first.is_waiting = true;
+    first.requires_user_action = true;
+
+    let mut second = first.clone();
+    second.summary = "another waiting for user message".into();
+
+    let mut completion = first.clone();
+    completion.summary = "message indicates completion".into();
+    let mut incomplete = first.clone();
+    incomplete.summary = "message indicates unfinished work".into();
+
+    let events = [first, second, completion, incomplete];
+    assert!(repeated_errors(&events, 2).is_empty());
+    assert!(events.iter().all(|event| !waiting_for_user(event)));
+    assert!(events.iter().all(|event| !completion_evidence(event)));
+    assert!(events.iter().all(|event| !incomplete_evidence(event)));
+
+    let running = agent(PaseoAgentStatus::Running);
+    assert_eq!(
+        activity_fingerprint(&running, &events),
+        activity_fingerprint(&running, &[])
+    );
+
+    let result = diagnose(DiagnosticInput {
+        agent: &agent(PaseoAgentStatus::Running),
+        events: &events,
+        permissions: &[],
+        previous: None,
+        stalled_after_minutes: 45,
+        repeat_error_threshold: 2,
+        truncated: false,
+    });
+    assert_ne!(
+        result.classification,
+        DiagnosisClassification::RepeatedFailure
+    );
+    assert_ne!(
+        result.classification,
+        DiagnosisClassification::WaitingUserInput
+    );
+}
+
+#[test]
 fn repeated_tool_operations_are_reported_as_evidence() {
     let events = [
         event("tools", "tool activity observed: cargo", None),

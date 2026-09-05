@@ -118,7 +118,7 @@ pub fn stored_state(
 pub fn activity_fingerprint(agent: &PaseoAgent, events: &[ActivityEvent]) -> String {
     let mut hash = Sha256::new();
     hash.update(agent.status.as_str().as_bytes());
-    for event in events {
+    for event in events.iter().filter(|event| event.is_diagnostic_evidence()) {
         hash.update(event.event_type.as_bytes());
         hash.update(event.summary.as_bytes());
         if let Some(signature) = event.error_signature.as_deref() {
@@ -154,7 +154,7 @@ fn effective_progress_at(
 
 fn repeated_errors(events: &[ActivityEvent], threshold: u32) -> Vec<Value> {
     let mut counts: HashMap<&str, (u32, Option<&str>)> = HashMap::new();
-    for event in events {
+    for event in events.iter().filter(|event| event.is_diagnostic_evidence()) {
         if let Some(signature) = event.error_signature.as_deref() {
             let entry = counts.entry(signature).or_default();
             entry.0 += 1;
@@ -181,6 +181,9 @@ fn repeated_operation_groups(events: &[ActivityEvent]) -> usize {
 }
 
 fn waiting_for_user(event: &ActivityEvent) -> bool {
+    if !event.is_diagnostic_evidence() {
+        return false;
+    }
     let summary = event.summary.to_ascii_lowercase();
     [
         "waiting for user",
@@ -207,6 +210,9 @@ fn long_running_tool(event: &ActivityEvent) -> bool {
 }
 
 fn incomplete_evidence(event: &ActivityEvent) -> bool {
+    if !event.is_diagnostic_evidence() {
+        return false;
+    }
     let summary = event.summary.to_ascii_lowercase();
     [
         "remaining",
@@ -221,6 +227,9 @@ fn incomplete_evidence(event: &ActivityEvent) -> bool {
 }
 
 fn completion_evidence(event: &ActivityEvent) -> bool {
+    if !event.is_diagnostic_evidence() {
+        return false;
+    }
     let summary = event.summary.to_ascii_lowercase();
     [
         "completed",

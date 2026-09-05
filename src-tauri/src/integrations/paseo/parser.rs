@@ -291,12 +291,15 @@ fn normalized_event(
     let raw_lower = raw_summary.to_ascii_lowercase();
     let lower = format!("{} {}", event_type, raw_lower);
     let is_reasoning = event_type == "reasoning_signal";
+    let is_diagnostic_evidence = ActivityEvent::kind_is_diagnostic_evidence(&kind);
     let is_error = !is_reasoning
+        && is_diagnostic_evidence
         && (event_type == "errors"
             || ["error", "failed", "panic", "exception"]
                 .iter()
                 .any(|needle| lower.contains(needle)));
     let is_waiting = !is_reasoning
+        && is_diagnostic_evidence
         && (mapping.requires_user_action
             || [
                 "waiting for user",
@@ -311,6 +314,7 @@ fn normalized_event(
         &kind,
         event_type,
         &raw_lower,
+        is_diagnostic_evidence,
         is_waiting,
         error_signature.as_deref(),
     );
@@ -320,7 +324,7 @@ fn normalized_event(
         occurred_at,
         summary: summary.clone(),
         known: mapping.known,
-        is_progress: !summary.is_empty() && !is_error && !is_waiting,
+        is_progress: is_diagnostic_evidence && !summary.is_empty() && !is_error && !is_waiting,
         is_waiting,
         requires_user_action: is_waiting,
         error_signature,
@@ -331,11 +335,15 @@ fn safe_activity_summary(
     kind: &str,
     event_type: &str,
     raw_lower: &str,
+    is_diagnostic_evidence: bool,
     is_waiting: bool,
     error_signature: Option<&str>,
 ) -> String {
     if kind.eq_ignore_ascii_case("thought") {
         return "internal reasoning activity observed".into();
+    }
+    if !is_diagnostic_evidence {
+        return "user message activity observed".into();
     }
     if event_type == "generic" {
         return format!("generic activity observed: {}", bounded(&redact(kind), 64));
@@ -696,6 +704,24 @@ mod tests {
         assert!(!event.is_waiting);
         assert!(!event.requires_user_action);
         assert!(event.error_signature.is_none());
+    }
+
+    #[test]
+    fn user_messages_do_not_self_report_errors_or_waiting() {
+        let parsed = parse_activity(
+            "[User] Previous error failed while waiting for user permission approval",
+            "0.4.0",
+            false,
+        )
+        .unwrap();
+        let event = &parsed.data[0];
+        assert_eq!(event.kind, "User");
+        assert_eq!(event.event_type, "messages");
+        assert_eq!(event.summary, "user message activity observed");
+        assert!(event.error_signature.is_none());
+        assert!(!event.is_waiting);
+        assert!(!event.requires_user_action);
+        assert!(!event.is_progress);
     }
 
     #[test]
