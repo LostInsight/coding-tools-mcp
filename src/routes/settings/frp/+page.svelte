@@ -34,6 +34,7 @@
   let cloudflareZoneId = $state("");
   let cloudflareTunnelToken = $state("");
   let cloudflareApiToken = $state("");
+  let cloudflareExtraArgsText = $state("");
   let makeDefault = $state(false);
   let cloudflareMakeDefault = $state(false);
 
@@ -78,6 +79,7 @@
     cloudflareZoneId = "";
     cloudflareTunnelToken = "";
     cloudflareApiToken = "";
+    cloudflareExtraArgsText = "";
     cloudflareMakeDefault = false;
   }
 
@@ -100,6 +102,7 @@
     cloudflareZoneId = profile.zoneId;
     cloudflareTunnelToken = "";
     cloudflareApiToken = "";
+    cloudflareExtraArgsText = (profile.extraArgs || []).join('\n');
     cloudflareMakeDefault = profile.isDefault;
   }
 
@@ -151,6 +154,7 @@
           accountId: cloudflareAccountId.trim(),
           tunnelId: cloudflareTunnelId.trim(),
           zoneId: cloudflareZoneId.trim(),
+          extraArgs: cloudflareExtraArgsText.trim().split('\n').map(s => s.trim()).filter(s => s),
         },
         cloudflareTunnelToken.trim() || undefined,
         cloudflareApiToken.trim() || undefined,
@@ -384,6 +388,15 @@
               <SecretInput bind:value={cloudflareApiToken} placeholder="Cloudflare API token" showCopy={false} />
             </label>
           </div>
+          <label class="grid gap-1">
+            <span class="text-xs text-[var(--color-text-muted)]">自定义参数（每行一个 argv，例如 --protocol 后下一行写 http2）</span>
+            <textarea
+              class="tx-input tx-mono text-xs"
+              rows="3"
+              placeholder="--protocol&#10;http2&#10;--loglevel&#10;info"
+              bind:value={cloudflareExtraArgsText}
+            ></textarea>
+          </label>
           <label class="flex items-center gap-2 text-sm text-[var(--color-text-secondary)]">
             <input type="checkbox" class="h-4 w-4" bind:checked={cloudflareMakeDefault} />
             作为默认 Cloudflare 配置

@@ -13,6 +13,20 @@ use crate::tunnel::supervisor::ProfileLogSink;
 
 const QUICK_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const NAMED_READY_TIMEOUT: Duration = Duration::from_secs(180);
+const MAX_EXTRA_ARGS: usize = 32;
+const MAX_EXTRA_ARG_LENGTH: usize = 512;
+
+const RESERVED_EXTRA_ARGS: &[&str] = &[
+    "--token",
+    "--token-file",
+    "--credentials-file",
+    "--cred-file",
+    "--credentials-contents",
+    "--origincert",
+    "--config",
+    "--url",
+    "--pidfile",
+];
 
 /// Handle to a supervised `cloudflared` child process.
 pub struct CloudflareTunnelHandle {
@@ -234,9 +248,11 @@ pub async fn spawn_cloudflare_tunnel(
     cloudflare_token: &str,
     named_public_url: &str,
     use_proxy: bool,
+    extra_args: &[String],
 ) -> AppResult<CloudflareTunnelHandle> {
     let cloudflared = resolve_cloudflared()?;
     let quick = cloudflare_mode != "named";
+    validate_cloudflared_extra_args(extra_args)?;
 
     if !quick {
         if cloudflare_token.trim().is_empty() {
@@ -286,6 +302,10 @@ pub async fn spawn_cloudflare_tunnel(
             "--token",
             cloudflare_token.trim(),
         ]);
+    }
+    // Add custom args after the main arguments
+    for arg in extra_args {
+        cmd.arg(arg);
     }
 
     let mut child = cmd
@@ -353,6 +373,31 @@ pub async fn spawn_cloudflare_tunnel(
         public_url,
         pid,
     })
+}
+
+pub fn validate_cloudflared_extra_args(args: &[String]) -> AppResult<()> {
+    if args.len() > MAX_EXTRA_ARGS {
+        return Err(AppError::Message(format!(
+            "Cloudflare 自定义参数最多允许 {MAX_EXTRA_ARGS} 项。"
+        )));
+    }
+    for arg in args {
+        if arg.is_empty() || arg.contains('\0') {
+            return Err(AppError::Message("Cloudflare 自定义参数不能包含空值或 NUL 字符。".into()));
+        }
+        if arg.chars().count() > MAX_EXTRA_ARG_LENGTH {
+            return Err(AppError::Message(format!(
+                "Cloudflare 单个自定义参数不能超过 {MAX_EXTRA_ARG_LENGTH} 个字符。"
+            )));
+        }
+        let flag = arg.split_once('=').map_or(arg.as_str(), |(flag, _)| flag);
+        if RESERVED_EXTRA_ARGS.iter().any(|reserved| flag == *reserved) {
+            return Err(AppError::Message(format!(
+                "Cloudflare 自定义参数不能覆盖应用管理的 {flag}。"
+            )));
+        }
+    }
+    Ok(())
 }
 
 struct QuickTunnelReady {
@@ -470,7 +515,10 @@ pub async fn stop_child(mut child: Child, pid: Option<u32>) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cloudflare_ready_timeout, extract_trycloudflare_url, named_tunnel_is_ready};
+    use super::{
+        cloudflare_ready_timeout, extract_trycloudflare_url, named_tunnel_is_ready,
+        validate_cloudflared_extra_args,
+    };
 
     #[test]
     fn extracts_trycloudflare_url_from_log_line() {
@@ -501,5 +549,27 @@ mod tests {
     fn named_tunnel_allows_protocol_fallback_time() {
         assert_eq!(cloudflare_ready_timeout(true).as_secs(), 30);
         assert_eq!(cloudflare_ready_timeout(false).as_secs(), 180);
+    }
+
+    #[test]
+    fn custom_args_preserve_one_argv_item_per_string() {
+        let args = vec!["--protocol".to_string(), "http2".to_string()];
+        assert!(validate_cloudflared_extra_args(&args).is_ok());
+    }
+
+    #[test]
+    fn custom_args_cannot_override_application_owned_flags() {
+        for arg in ["--token", "--url=https://example.com", "--config"] {
+            assert!(validate_cloudflared_extra_args(&[arg.to_string()]).is_err());
+        }
+    }
+
+    #[test]
+    fn custom_args_have_bounded_size_and_reject_nul() {
+        assert!(validate_cloudflared_extra_args(&["x\0y".to_string()]).is_err());
+        assert!(validate_cloudflared_extra_args(
+            &(0..33).map(|index| format!("--arg-{index}")).collect::<Vec<_>>()
+        )
+        .is_err());
     }
 }

@@ -50,6 +50,7 @@ export interface CloudflareProfileDto {
   accountId: string;
   tunnelId: string;
   zoneId: string;
+  extraArgs: string[];
   hasTunnelToken: boolean;
   hasApiToken: boolean;
   isDefault: boolean;
@@ -61,6 +62,7 @@ export interface CloudflareProfileInput {
   accountId: string;
   tunnelId: string;
   zoneId: string;
+  extraArgs: string[];
 }
 
 export async function listCloudflareProfiles(): Promise<CloudflareProfileDto[]> {

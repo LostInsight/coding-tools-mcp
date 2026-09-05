@@ -35,6 +35,9 @@ pub struct CloudflareProfile {
     pub tunnel_id: String,
     #[serde(default, alias = "zoneId")]
     pub zone_id: String,
+    /// Additional command-line arguments for cloudflared (e.g., "--protocol http2").
+    #[serde(default, alias = "extraArgs")]
+    pub extra_args: Vec<String>,
 }
 
 /// Download settings for fetching frpc / cloudflared binaries.
@@ -274,13 +277,15 @@ mod tests {
             "name": "Cloudflare",
             "accountId": "account",
             "tunnelId": "tunnel",
-            "zoneId": "zone"
+            "zoneId": "zone",
+            "extraArgs": ["--protocol", "http2"]
         }))
         .expect("Cloudflare profile should deserialize");
 
         assert_eq!(profile.account_id, "account");
         assert_eq!(profile.tunnel_id, "tunnel");
         assert_eq!(profile.zone_id, "zone");
+        assert_eq!(profile.extra_args, ["--protocol", "http2"]);
     }
 
     #[test]

@@ -15,6 +15,7 @@ pub struct CloudflareProfileDto {
     pub account_id: String,
     pub tunnel_id: String,
     pub zone_id: String,
+    pub extra_args: Vec<String>,
     pub has_tunnel_token: bool,
     pub has_api_token: bool,
     pub is_default: bool,
@@ -32,6 +33,7 @@ fn profile_dto(
         account_id: profile.account_id.clone(),
         tunnel_id: profile.tunnel_id.clone(),
         zone_id: profile.zone_id.clone(),
+        extra_args: profile.extra_args.clone(),
         has_tunnel_token,
         has_api_token,
         is_default,
@@ -82,6 +84,7 @@ pub fn save_cloudflare_profile(
     saved.account_id = saved.account_id.trim().to_string();
     saved.tunnel_id = saved.tunnel_id.trim().to_string();
     saved.zone_id = saved.zone_id.trim().to_string();
+    crate::tunnel::validate_cloudflared_extra_args(&saved.extra_args)?;
     if saved.account_id.is_empty() || saved.tunnel_id.is_empty() || saved.zone_id.is_empty() {
         return Err(AppError::Message(
             "Cloudflare Account ID、Tunnel ID 与 Zone ID 必须同时填写。".into(),

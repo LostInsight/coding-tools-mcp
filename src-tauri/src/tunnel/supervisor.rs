@@ -57,6 +57,7 @@ struct CloudflareConfig {
     named_url: String,
     log_name: &'static str,
     named_route: Option<NamedTunnelRoute>,
+    extra_args: Vec<String>,
 }
 
 struct FrpRoute {
@@ -570,6 +571,7 @@ impl TunnelSupervisor {
             &config.token,
             &config.named_url,
             use_proxy,
+            &config.extra_args,
         )
         .await
         .inspect_err(|_| {
@@ -1131,6 +1133,10 @@ fn cloudflare_config(
                 cloudflare_profile,
                 "cloudflare_profile_api_token",
             )?;
+            let extra_args = cloudflare_profile
+                .map(|profile| profile.extra_args.clone())
+                .unwrap_or_default();
+            cloudflare::validate_cloudflared_extra_args(&extra_args)?;
             let named_route = if mode == "named" {
                 Some(NamedTunnelRoute {
                     account_id: resolve_cloudflare_value(
@@ -1160,6 +1166,7 @@ fn cloudflare_config(
                 named_url: profile.tunnel.public_url.clone(),
                 log_name: "cloudflared.log",
                 named_route,
+                extra_args,
             })
         }
         TunnelServiceKind::Actions => {
@@ -1182,6 +1189,10 @@ fn cloudflare_config(
                 cloudflare_profile,
                 "cloudflare_profile_api_token",
             )?;
+            let extra_args = cloudflare_profile
+                .map(|profile| profile.extra_args.clone())
+                .unwrap_or_default();
+            cloudflare::validate_cloudflared_extra_args(&extra_args)?;
             let named_route = if mode == "named" {
                 Some(NamedTunnelRoute {
                     account_id: resolve_cloudflare_value(
@@ -1211,6 +1222,7 @@ fn cloudflare_config(
                 named_url: profile.actions.public_url.clone(),
                 log_name: "actions-cloudflared.log",
                 named_route,
+                extra_args,
             })
         }
     }
@@ -1446,6 +1458,7 @@ mod tests {
                 account_id: "account".into(),
                 tunnel_id: "tunnel".into(),
                 zone_id: "zone".into(),
+                extra_args: vec!["--protocol".into(), "http2".into()],
             }],
             ..AppSettings::default()
         };
@@ -1457,6 +1470,7 @@ mod tests {
         assert_eq!(route.account_id, "account");
         assert_eq!(route.tunnel_id, "tunnel");
         assert_eq!(route.zone_id, "zone");
+        assert_eq!(config.extra_args, ["--protocol", "http2"]);
 
         profile.tunnel.cloudflare_account_id = "workspace-account".into();
         let override_config = cloudflare_config(&profile, TunnelServiceKind::Mcp, &settings)

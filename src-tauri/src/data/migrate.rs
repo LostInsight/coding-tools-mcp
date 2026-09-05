@@ -114,6 +114,7 @@ fn migrate_separated_tunnel_profiles(data: &mut AppData) -> bool {
                 account_id: std::mem::take(&mut profile.cloudflare_account_id),
                 tunnel_id: std::mem::take(&mut profile.cloudflare_tunnel_id),
                 zone_id: std::mem::take(&mut profile.cloudflare_zone_id),
+                extra_args: Vec::new(),
             };
             Some(cloudflare)
         })
