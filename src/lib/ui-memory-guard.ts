@@ -2,12 +2,12 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getWebviewMemorySample, recreateUiWebview } from "$lib/api/ui-memory";
 
 /** How long the window must stay minimized/hidden before a silent UI recreate. */
-const HIDDEN_RELOAD_MS = 50 * 60 * 1000;
+const HIDDEN_RELOAD_MS = 30 * 60 * 1000;
 /** Auto-recreate when WebView working set exceeds this (MB). */
-const MEMORY_WARN_MB = 2048;
+const MEMORY_WARN_MB = 1024;
 /** Min gap between any UI recreates. */
 const RELOAD_COOLDOWN_MS = 60 * 60 * 1000;
-/** How often to sample memory while the window may be visible. */
+/** How often to sample memory (works while visible and while hidden). */
 const SAMPLE_INTERVAL_MS = 5 * 60 * 1000;
 /** Tick for hidden/minimized duration tracking. */
 const HIDDEN_TICK_MS = 30 * 1000;
@@ -99,7 +99,7 @@ async function maybeSilentReload(): Promise<void> {
 
 async function maybeAutoRecreateHighMemory(): Promise<void> {
   if (releasing) return;
-  if (await isWindowObscured()) return;
+  // 隐藏/最小化时同样采样：隐藏态的重建是静默的，内存超限应尽早回收。
   if (!cooldownOk()) return;
 
   let sample;
