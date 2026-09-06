@@ -14,6 +14,10 @@ use crate::tools::workspace::{relative_display, tool_ok, Workspace, WorkspaceErr
 const DEFAULT_SEARCH_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const BINARY_PEEK_BYTES: usize = 8192;
 
+/// read_file 的输入大小上限：文本工具会整读文件，超过该大小的文件必须
+/// 用 exec_command 分段读取，否则每次调用都会把整个文件缓冲进内存。
+pub(crate) const READ_FILE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 pub fn read_file(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> {
     let path = args
         .get("path")
@@ -39,6 +43,21 @@ pub fn read_file(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> 
         .max(1) as usize;
     let end_line = args.get("end_line").and_then(Value::as_u64).map(|v| v as usize);
 
+    let total_file_bytes = fs::metadata(&resolved.path)
+        .map(|meta| meta.len())
+        .map_err(|_| WorkspaceError::not_found("File not found"))?;
+    if total_file_bytes > READ_FILE_MAX_BYTES {
+        return Err(WorkspaceError::Tool {
+            code: "FILE_TOO_LARGE",
+            message: format!(
+                "File is {:.1} MB, beyond the read_file limit of {} MB. Text tools buffer the whole file in memory; sample oversized or binary files with exec_command (python/head/tail/dd) instead.",
+                total_file_bytes as f64 / 1_048_576.0,
+                READ_FILE_MAX_BYTES / 1_048_576
+            ),
+            category: "validation",
+            retryable: false,
+        });
+    }
     let data = fs::read(&resolved.path).map_err(|_| WorkspaceError::not_found("File not found"))?;
     if data.iter().take(4096).any(|b| *b == 0) {
         return Err(WorkspaceError::Tool {
@@ -686,4 +705,34 @@ fn format_mtime(st: Option<SystemTime>) -> Option<String> {
             .unwrap_or_default();
         format!("{}.{:03}Z", d.as_secs(), d.subsec_millis())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn read_file_rejects_oversized_file_before_reading() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ws = Workspace::new(temp.path().to_path_buf()).expect("workspace");
+        let big = temp.path().join("big.bin");
+        std::fs::File::create(&big)
+            .and_then(|file| file.set_len(READ_FILE_MAX_BYTES + 1))
+            .expect("create sparse oversized file");
+
+        let error = read_file(&ws, &json!({ "path": "big.bin" })).expect_err("must be rejected");
+        assert_eq!(error.to_error_value()["code"], "FILE_TOO_LARGE");
+    }
+
+    #[test]
+    fn read_file_still_reads_small_text_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ws = Workspace::new(temp.path().to_path_buf()).expect("workspace");
+        std::fs::write(temp.path().join("a.txt"), "hello\nworld\n").expect("write");
+
+        let out = read_file(&ws, &json!({ "path": "a.txt" })).expect("read");
+        assert_eq!(out["content"], "hello\nworld\n");
+        assert_eq!(out["truncated"], false);
+    }
 }

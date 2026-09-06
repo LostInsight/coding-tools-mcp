@@ -30,6 +30,26 @@ pub fn view_image(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError>
     let auto_resize = args.get("auto_resize").and_then(Value::as_bool).unwrap_or(true);
 
     let resolved = ws.resolve_read_path(path)?;
+    let file_len = std::fs::metadata(&resolved.path)
+        .map(|meta| meta.len())
+        .map_err(|e| WorkspaceError::Tool {
+            code: "IO_ERROR",
+            message: format!("Failed to stat image: {e}"),
+            category: "runtime",
+            retryable: false,
+        })?;
+    if file_len > crate::tools::file::READ_FILE_MAX_BYTES {
+        return Err(WorkspaceError::Tool {
+            code: "FILE_TOO_LARGE",
+            message: format!(
+                "Image is {:.1} MB, beyond the view_image limit of {} MB. Resize or export a smaller image first.",
+                file_len as f64 / 1_048_576.0,
+                crate::tools::file::READ_FILE_MAX_BYTES / 1_048_576
+            ),
+            category: "validation",
+            retryable: false,
+        });
+    }
     let mut data = std::fs::read(&resolved.path).map_err(|e| WorkspaceError::Tool {
         code: "IO_ERROR",
         message: format!("Failed to read image: {e}"),

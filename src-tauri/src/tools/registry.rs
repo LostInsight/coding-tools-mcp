@@ -177,7 +177,7 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
     (
         "read_file",
         "Read file",
-        "Read a UTF-8 text file slice inside the configured workspace.",
+        "Read a UTF-8 text file slice inside the configured workspace. Files larger than 64 MB are rejected; sample oversized or binary files with exec_command instead.",
         true,
         false,
         false,
